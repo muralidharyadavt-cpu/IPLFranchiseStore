@@ -80,7 +80,7 @@ test('details loading, network failure and retry work', async () => {
 });
 test('labels, semantic navigation and pending routes are available', async () => {
   open(); expect(screen.getByRole('search')).toBeInTheDocument(); expect(screen.getByLabelText('Product name')).toBeInTheDocument(); expect(screen.getByLabelText('Merchandise type')).toBeInTheDocument(); expect(screen.getByLabelText('Franchise', { exact: true })).toBeInTheDocument();
-  await screen.findByText('₹499.00'); fireEvent.click(screen.getByRole('link', { name: 'Cart' })); expect(screen.getByText(/pending implementation/)).toBeInTheDocument();
+  await screen.findByText('₹499.00'); fireEvent.click(screen.getByRole('link', { name: 'Admin' })); expect(screen.getByText(/pending implementation/)).toBeInTheDocument();
 });
 test('unknown routes show not found', () => { open('/unknown'); expect(screen.getByRole('heading', { name: 'Page not found' })).toBeInTheDocument(); });
 test('aborted stale requests cannot replace a newer filter result', async () => {

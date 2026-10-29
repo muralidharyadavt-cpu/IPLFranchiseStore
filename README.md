@@ -23,6 +23,7 @@ dotnet test
 cd frontend
 npm install
 npm run build
+npm test
 ```
 
 ## Run locally
@@ -343,3 +344,23 @@ Continuation paging is not a frozen cross-request snapshot. Concurrent inserts/d
 GET /api/v1/products/{id} point-reads the persisted product in the store partition and returns the same complete, enriched Product representation as catalogue items. Unknown IDs or non-product documents return 404 ProblemDetails; dependency failures return sanitized 503 ProblemDetails. No document is rewritten. Example: GET /api/v1/products/csk-cap.
 
 The legacy list cap is a deliberate compatibility correction required by the assessment, not a promise that legacy callers will still receive the entire catalogue. Use paged=true for all new clients. Follow nextContinuationToken until null, including after empty pages.
+
+## React customer journey (Gates 4A / 4B)
+
+Run the Development API at http://localhost:5000 and Vite from `frontend` with `npm.cmd run dev`. Vite serves http://localhost:5173 and proxies `/api` to the backend. `npm.cmd run build` type-checks and builds; `npm.cmd test` runs all Jest/React Testing Library tests once, without watch mode.
+
+Routes: `/products`, `/products/:id`, `/cart`, `/checkout`, `/orders`, `/orders/:id`. Admin remains an explicitly pending page. All catalogue reads request `paged=true`; continuation stacks implement Next/Previous, and filters reset the stack. The UI displays public merchandise metadata rather than the Cosmos discriminator. Cart and order prices/totals come from the server; the browser only formats them with `Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR' })`.
+
+The selected demo user defaults to `demo-alice` and is retained in this tab's session storage. The visible identity form accepts the existing 1–64-character ASCII user IDs. Every cart/order request sends `X-Demo-User-Id`; cart requests also use the matching user in the existing route path. This is caller-selected development identity, **not authentication**. No production security or payment integration is implied.
+
+Each new cart action generates a UUID requestId; each new checkout generates a UUID orderId. The complete original command (including expectedCartVersion and acknowledgement product ETags) is saved in **sessionStorage before sending**, with the user and operation. A synchronous lock prevents repeated clicks during preparation/sending. Network failure, timeout, unreadable response, HTTP 408/429 or 5xx retains the command and blocks all new mutations and identity switching. “Retry saved request” sends exactly that command; it never refreshes a version or generates a replacement ID. The saved command survives route changes and reloading/recreating the app in the same tab. Definitive other 4xx rejections finish that intent; refresh/review the cart and explicitly make a new action. Writes are never automatically retried. A 15-second request timeout is treated as ambiguous. A successful replay is followed by a current-cart GET because an idempotent response can be historical.
+
+Session storage is a deliberate per-tab recovery boundary, not a durable cross-device queue. Closing the tab, clearing browser data or manually changing saved commands loses recovery information. Keep the tab until uncertain requests resolve. If storage is unavailable/corrupt, mutations are blocked. Separate tabs are independent clients: backend durable idempotency, cart versions and atomic checkout remain authoritative for concurrent activity. No in-memory flag is relied upon for server correctness.
+
+Cart displays accepted/current price and stock differences and product-version warnings. Only the explicit “Accept reviewed changes” action submits the exact displayed versions; quantity edits and refresh never accept changed snapshots. Insufficient/unavailable stock blocks acknowledgement/checkout. Checkout revalidates on the server even when the cart currently says canCheckout. Confirmation and order history use immutable purchased line snapshots. History filters are **inclusive UTC** date/time inputs sent with Z; displayed order times use **Asia/Kolkata (IST)**. Paging and date validation use the existing API contract.
+
+### Isolated live customer verification
+
+In a separate terminal, set `Cosmos__DatabaseName` to a **new disposable** `IPLFranchiseStoreTests-Gate4B-<uuid>` and start the API on http://localhost:5001 with `dotnet run --no-build --project backend/IPLFranchiseStore.Api --urls http://localhost:5001`. Keep the normal API running on 5000. From `frontend`, run `node scripts/verify-customer-flow.mjs`. It uses the real TypeScript API client (transpiled using the existing Babel dependency), sends real HTTP requests and requires untouched stock in this isolated database. It refuses mutation URLs other than localhost:5001. Port alone does not prove isolation: the terminal's database override is a required prerequisite. Never point this test API at the normal database.
+
+The check creates a unique temporary demo user, adds 2 MI Jerseys and 3 CSK Caps, verifies ₹5,495, checks out, verifies stock 48/97, an empty cart, one historical order and exact replay without further deductions. It also compares the normal catalogue including product ETags before/after. Results go to ignored `TestResults/gate4b-live.json`. It does not reset inventory or delete any database. Retain or delete only the explicitly named disposable database through the emulator after inspection. Browser rendering, narrow-screen layout, keyboard focus and screen-reader experience still require manual browser checks; HTTP/client integration and jsdom component tests are not claims of a rendered-browser end-to-end pass.
