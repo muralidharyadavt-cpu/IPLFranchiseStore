@@ -44,7 +44,8 @@ public sealed class CosmosIntegrationTests
             var persisted = await restartedHttp.GetFromJsonAsync<List<Product>>("/api/v1/products");
             Assert.NotNull(persisted);
             Assert.Equal(4, persisted.Count);
-            Assert.Equal(changed, Assert.Single(persisted, p => p.Id == changed.Id));
+            var persistedProduct = Assert.Single(persisted, p => p.Id == changed.Id);
+            Assert.Equal(changed with { ETag = persistedProduct.ETag }, persistedProduct);
             Assert.Equal(System.Net.HttpStatusCode.OK,
                 (await restartedHttp.GetAsync("/api/v1/health/dependencies")).StatusCode);
         }

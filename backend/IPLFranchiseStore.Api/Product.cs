@@ -1,7 +1,11 @@
+using System.Text.Json.Serialization;
+
 namespace IPLFranchiseStore.Api;
 
 public sealed record Product
 {
+    [JsonPropertyName("_etag")]
+    public string? ETag { get; init; }
     public required string Id { get; init; }
     public required string StoreId { get; init; }
     public string Type { get; init; } = "product";

@@ -6,6 +6,7 @@ builder.Services.AddSingleton(services => services.GetRequiredService<IConfigura
     .GetSection("Cosmos").Get<CosmosSettings>() ?? new());
 builder.Services.AddSingleton<CosmosClient>(services => CosmosStore.CreateClient(services.GetRequiredService<CosmosSettings>()));
 builder.Services.AddSingleton<CosmosStore>();
+builder.Services.AddSingleton<InventoryService>();
 var app = builder.Build();
 var settings = app.Services.GetRequiredService<CosmosSettings>();
 
@@ -50,6 +51,7 @@ app.MapGet("/api/v1/products", async (IServiceProvider services, CancellationTok
     }
 });
 
+app.MapDevelopmentAdmin();
 app.Run();
 
 public partial class Program;
