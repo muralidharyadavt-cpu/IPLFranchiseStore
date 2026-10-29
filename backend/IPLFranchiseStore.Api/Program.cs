@@ -1,7 +1,54 @@
+using IPLFranchiseStore.Api;
+using Microsoft.Azure.Cosmos;
+
 var builder = WebApplication.CreateBuilder(args);
+builder.Services.AddSingleton(services => services.GetRequiredService<IConfiguration>()
+    .GetSection("Cosmos").Get<CosmosSettings>() ?? new());
+builder.Services.AddSingleton<CosmosClient>(services => CosmosStore.CreateClient(services.GetRequiredService<CosmosSettings>()));
+builder.Services.AddSingleton<CosmosStore>();
 var app = builder.Build();
+var settings = app.Services.GetRequiredService<CosmosSettings>();
+
+// Missing credentials or an unavailable emulator must not prevent liveness/failure reporting.
+if (!string.IsNullOrWhiteSpace(settings.Key))
+{
+    try
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await app.Services.GetRequiredService<CosmosStore>().InitializeAsync(timeout.Token);
+    }
+    catch (Exception)
+    {
+        app.Logger.LogWarning("Cosmos initialization failed. Check emulator availability, certificate trust and local configuration.");
+    }
+}
 
 app.MapGet("/api/v1/health", () => Results.Ok(new { status = "healthy" }));
+app.MapGet("/api/v1/health/dependencies", async (IServiceProvider services, CancellationToken cancellationToken) =>
+{
+    try
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(10));
+        await services.GetRequiredService<CosmosStore>().Container.ReadContainerAsync(cancellationToken: timeout.Token);
+        return Results.Ok(new { status = "healthy", cosmos = "available" });
+    }
+    catch (Exception)
+    {
+        return Results.Json(new { status = "unhealthy", cosmos = "unavailable" }, statusCode: 503);
+    }
+});
+app.MapGet("/api/v1/products", async (IServiceProvider services, CancellationToken cancellationToken) =>
+{
+    try
+    {
+        return Results.Ok(await services.GetRequiredService<CosmosStore>().GetProductsAsync(cancellationToken));
+    }
+    catch (Exception)
+    {
+        return Results.Json(new { error = "Product store unavailable." }, statusCode: 503);
+    }
+});
 
 app.Run();
 
