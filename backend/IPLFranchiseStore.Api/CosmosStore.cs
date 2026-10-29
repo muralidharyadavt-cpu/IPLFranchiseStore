@@ -31,10 +31,12 @@ public sealed class CosmosStore(CosmosClient client, CosmosSettings settings)
     {
         var database = await client.CreateDatabaseIfNotExistsAsync(settings.DatabaseName,
             cancellationToken: cancellationToken);
-        var container = await database.Database.CreateContainerIfNotExistsAsync(
-            new ContainerProperties(settings.ContainerName, PartitionKeyPath), cancellationToken: cancellationToken);
+        var properties = new ContainerProperties(settings.ContainerName, PartitionKeyPath);
+        StoreIndexes.AddMissing(properties.IndexingPolicy);
+        var container = await database.Database.CreateContainerIfNotExistsAsync(properties, cancellationToken: cancellationToken);
         if (container.Resource.PartitionKeyPath != PartitionKeyPath)
             throw new InvalidOperationException("StoreData must use partition key /storeId.");
+        await StoreIndexes.EnsureAsync(Container, cancellationToken);
 
         var now = DateTimeOffset.UtcNow;
         Product[] products =
@@ -58,6 +60,7 @@ public sealed class CosmosStore(CosmosClient client, CosmosSettings settings)
 
         Product NewProduct(string id, string name, string franchise, string description, decimal price, int stock) =>
             new() { Id = id, StoreId = StoreId, Name = name, Franchise = franchise,
+                MerchandiseType = ProductTaxonomy.LegacyType(id),
                 Description = description, Price = price, Stock = stock, CreatedAt = now, UpdatedAt = now };
     }
 
@@ -69,6 +72,6 @@ public sealed class CosmosStore(CosmosClient client, CosmosSettings settings)
         var products = new List<Product>();
         while (iterator.HasMoreResults)
             products.AddRange(await iterator.ReadNextAsync(cancellationToken));
-        return products;
+        return products.Select(ProductTaxonomy.Enrich).ToList();
     }
 }

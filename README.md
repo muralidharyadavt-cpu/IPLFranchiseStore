@@ -54,7 +54,7 @@ Optional overrides are `Cosmos__Endpoint`, `Cosmos__DatabaseName`, and `Cosmos__
 
 Startup creates the database/container if missing and inserts four products with stable IDs. HTTP 409 conflicts are ignored: existing stock, descriptions, prices and timestamps are never overwritten. Missing individual seed records are inserted again. Other initialization failures produce a sanitized warning; liveness remains available. Fix configuration/availability and restart to retry initialization.
 
-`GET /api/v1/products` reads all product documents in this store partition (no search or public pagination yet). Prices are decimal INR amounts; `type` is the document discriminator `product`. `createdAt` and `updatedAt` are UTC timestamps. `GET /api/v1/health/dependencies` reads container metadata and returns HTTP 200 when available or sanitized HTTP 503 when unavailable. The existing `/api/v1/health` remains a liveness check. Products return sanitized HTTP 503 if storage cannot be read. No credentials or SDK exception details are sent to clients.
+Bare `GET /api/v1/products` retains the legacy product array; Gate 3 below adds opt-in search and pagination. Prices are decimal INR amounts; `type` is the document discriminator `product`. `createdAt` and `updatedAt` are UTC timestamps. `GET /api/v1/health/dependencies` reads container metadata and returns HTTP 200 when available or sanitized HTTP 503 when unavailable. The existing `/api/v1/health` remains a liveness check. Products return sanitized HTTP 503 if storage cannot be read. No credentials or SDK exception details are sent to clients.
 
 One logical partition deliberately co-locates the initial store's products so a transactional batch can atomically update multiple products within that partition. Checkout now uses this in Gate 2B below. This cannot provide atomic checkout across store partitions. A single hot store cannot scale horizontally across logical partitions; its normal limits are 20 GB and 10,000 RU/s, and actual throughput can be lower. Before growth, revisit partitioning and checkout consistency rather than treating one partition as an unlimited database. See [Cosmos partitioning](https://learn.microsoft.com/en-us/azure/cosmos-db/partitioning-overview).
 
@@ -216,7 +216,7 @@ GET /api/v1/orders/c4f8f5ab-fda2-4ac2-b79b-5aec758d7108
 X-Demo-User-Id: demo-alice
 ```
 
-GET returns HTTP 200 and the stored historical order; it never joins current product prices into an order. Orders are create-only through this API, and no order update/delete routes exist. A database account-key holder can still edit documents directly; immutable here means application behavior, not a tamper-proof ledger. Full order-history pagination is deferred.
+GET returns HTTP 200 and the stored historical order; it never joins current product prices into an order. Orders are create-only through this API, and no order update/delete routes exist. A database account-key holder can still edit documents directly; immutable here means application behavior, not a tamper-proof ledger. Gate 3 below adds paged order history.
 
 CheckoutService rejects empty carts, invalid/duplicate lines, missing products, quantities outside 1–10, insufficient stock, and any mismatch between accepted and current price/stock/product ETag. Even a sufficient but changed stock count requires explicit acknowledgement. It collects failing product IDs, codes and reasons in a ProblemDetails `failures` extension. All line failures are discovered before business writes: zero stock is deducted, no order/audit is created and the cart remains intact. A rejection may persist an idempotency result and lazily create guard metadata; neither is a purchase.
 
@@ -253,3 +253,93 @@ Order IDs are globally unique in this store, unlike user-scoped cart request IDs
 Tests use independently created Cosmos clients for final-unit competition, same-ID duplicates and different-ID same-cart races; a test-only barrier forces both independent services past validation before either commits. Additional independent-client interleavings prove admin↔cart-acknowledgement↔checkout guard participation in both directions. Tests append a deliberately conflicting final operation to a real emulator batch and confirm rollback of every product/order/audit/cart write. Another test commits successfully, then injects an IOException before delivering the success response (HTTP 503); a normal retry returns the persisted original order without another deduction. Test hooks are protected service overrides only; no HTTP failure switches are exposed.
 
 The concurrency guarantee assumes all application writers use the protocol and a single supported store partition. Direct account-key writers, old API versions bypassing guards, external payment effects, cross-partition purchases, multi-region production behavior and tamper-proof storage are outside this verified gate. Seed initialization remains create-only and never overwrites inventory. All automated/live verification mutations use dedicated isolated emulator databases.
+
+## Gate 3: catalogue queries, history and compatible API evolution
+
+Bare `GET /api/v1/products` (or `?paged=false` without catalogue parameters) retains its **array** response, full field set and legacy error shape, capped at 50 items in name ASC / id ASC order. It sets Deprecation: true, X-Page-Size: 50 and a Link rel="alternate" to paged mode. When more results exist, Link rel="next" contains the complete opaque continuation URL (the next response is a paged envelope). Even a short/empty SDK page may have a next link: always follow it. This deliberately bounds old callers; callers that ignored headers must migrate to avoid incomplete catalogues. Use `?paged=true` to obtain a page. Supplying any catalogue filter, `pageSize`, `continuationToken` or `includeTotalCount` also selects the paged envelope automatically. Combining `paged=false` with these new parameters returns 400. Existing clients can continue deserializing the bare array; new clients should always use paging.
+
+| Catalogue parameter | Accepted values / default | Example |
+| --- | --- | --- |
+| `paged` | Boolean; absent preserves the bare legacy array unless another supported parameter selects paging. `false` cannot accompany filters/paging options. | `paged=true` |
+| `search` | Optional case-insensitive partial product name, trimmed length 1–128 | `search=jer` |
+| `type` | Optional merchandise type: `Jersey`, `Cap`, `Flag`, `Signed Photograph`, `Other`, case-insensitive. `Signed Photo` is an alias. Deprecated `product` retains the old all-product discriminator filter. | `type=Cap` |
+| `merchandiseType` | Explicit alias for the five merchandise types above; `product` is not a merchandise type. If both parameters appear, their restrictions combine with AND. | `merchandiseType=Signed%20Photograph` |
+| `franchise` | Optional trimmed 1–64 characters; known franchise IDs/full names below are interchangeable and case-insensitive. Other nonempty values use an exact case-insensitive lookup, returning no matches when absent. | `franchise=Chennai%20Super%20Kings` or `franchise=CSK` |
+| `pageSize` | Integer 1–50; default **10** in paged mode | `pageSize=2` |
+| `continuationToken` | Absent for first page; otherwise an opaque nonempty token, URL-encode and return unchanged | `continuationToken=<next-token>` |
+| `includeTotalCount` | Boolean, default false (`totalCount: null`); true executes an additional COUNT query | `includeTotalCount=true` |
+
+All supplied filters combine with **AND**, using parameterized Cosmos SQL against persisted documents in partition `ipl-store`. **The public `type` filter now implements the assessment's merchandise-type requirement.** `merchandiseType` is its unambiguous alternative. The response/document field `type: "product"` remains the legacy Cosmos discriminator and must not be used as a merchandise label. New clients should display `merchandiseType`. `type=product` is retained only for old clients, not as the recommended merchandise example.
+
+| Franchise ID | Full display name accepted by `franchise` |
+| --- | --- |
+| `MI` | `Mumbai Indians` |
+| `CSK` | `Chennai Super Kings` |
+| `RCB` | `Royal Challengers Bengaluru` (also accepts historical `Royal Challengers Bangalore`) |
+| `KKR` | `Kolkata Knight Riders` |
+
+Unknown nonempty merchandise labels return HTTP 200 with an empty page, consistently with a franchise/name lookup having no matches. `Other` is an explicit supported category, not a synonym for an unsupported filter value. Empty/oversized values, duplicate parameter keys, unsupported parameter names (including `category`, `q`, `name`, `franchiseId`, `offset`, `limit`, `sort`) and invalid paging values return 400 ProblemDetails. Unsupported parameters were previously silently ignored; this was corrected to prevent accidentally unfiltered responses. Parameter names are case-insensitive; examples use the canonical spellings. Each parameter is single-valued. `type=Jersey&merchandiseType=Cap` is an empty intersection; `type=product&merchandiseType=Cap` returns caps.
+
+New seed documents persist canonical `merchandiseType` metadata. Existing seed JSON is **not rewritten**: the four stable seed IDs map explicitly to Jersey/Cap/Flag/Signed Photograph when the stored field is missing/null. The fallback is included in the Cosmos SQL predicate, not a post-query in-memory filter. Explicit stored metadata takes precedence over the fallback and over names; arbitrary legacy products without metadata classify as `Other`, with no guessed classification from their names. Add appropriate canonical metadata through a future reviewed migration if those older custom products need more specific categories. Existing stock, prices, timestamps and product ETags are untouched by catalogue reads or initialization conflicts. Stored discriminator names are not renamed, and cart/checkout/audit/idempotency behavior is unchanged.
+
+```http
+GET /api/v1/products?paged=true&pageSize=2&includeTotalCount=true
+GET /api/v1/products?search=jEr&type=Jersey&franchise=mi&pageSize=10&includeTotalCount=true
+GET /api/v1/products?type=Cap&franchise=Chennai%20Super%20Kings&includeTotalCount=true
+GET /api/v1/products?type=cap&franchise=CSK&includeTotalCount=true
+GET /api/v1/products?merchandiseType=Signed%20Photograph&franchise=Kolkata%20Knight%20Riders
+GET /api/v1/products?pageSize=2&includeTotalCount=true&continuationToken=<URL-encoded-next-token>
+```
+
+Paged responses have this shape:
+
+```json
+{"items":[],"nextContinuationToken":null,"pageSize":10,"totalCount":0}
+```
+
+`items` contains the existing complete Product representation: ID, ETag, name, type, franchise, description, decimal INR price/currency, stock and timestamps. The concrete backwards-compatible addition is **`stockStatus`**: `outOfStock` for stock <= 0, `lowStock` for 1–5, and `inStock` above 5. It is computed from current stock, requires no old-document migration or client input, and is additive to both legacy and paged product results. Old fields are neither renamed nor removed. A contract test checks the full old field set and deserializes the array with a legacy client DTO that ignores the new field.
+
+The audited correction also adds `merchandiseType`, `franchiseId`, `franchiseName` and `isLimitedEdition` to both legacy and paged product items. For example, CSK Cap retains `type: "product"` and `franchise: "CSK"` while exposing `merchandiseType: "Cap"`, `franchiseId: "CSK"`, `franchiseName: "Chennai Super Kings"`, `isLimitedEdition: false`. KKR Signed Photo exposes `merchandiseType: "Signed Photograph"` and `isLimitedEdition: true`. Prices remain decimal INR amounts **including tax**, with no added tax calculation; no shipping enhancement is implemented here. Old clients ignore these additional fields, and new clients can distinguish merchandise classification from document identity without changing old stored documents.
+
+Catalogue pages use `ORDER BY c.name ASC, c.id ASC` with Cosmos's case-sensitive ordinal string ordering; search matching remains case-insensitive. Unique IDs break duplicate-name ties. `MaxItemCount` and the SDK continuation token determine each page—there is no `OFFSET LIMIT`, in-memory slicing, or preloading of all matches. Cosmos can return fewer items than requested, including an empty page with a continuation token; keep following `nextContinuationToken` until null.
+
+`totalCount` is null unless `includeTotalCount=true`. When enabled, it is an exact `COUNT(1)` query with the same filters and partition, executed **in addition to** the page query on every request. This consumes extra RUs and latency; count cost depends on data/filter cardinality, and partial `CONTAINS` searches can require more index work. Leave it disabled when not needed. Count and page are separate reads, not a transactionally consistent snapshot during concurrent writes.
+
+Order history uses the established explicit development identity:
+
+```http
+GET /api/v1/orders?pageSize=10&includeTotalCount=true
+X-Demo-User-Id: demo-alice
+
+GET /api/v1/orders?dateFrom=2026-10-01T00%3A00%3A00Z&dateTo=2026-10-31T23%3A59%3A59.9999999Z&pageSize=10
+X-Demo-User-Id: demo-alice
+```
+
+`GET /api/v1/orders` returns the same paged envelope with original OrderDocument snapshots as items. Only the supplied user's persisted orders are queried; counts also include only that user. The endpoint remains Development-only and does not treat the caller-controlled header as production authentication. It uses `createdAt DESC, id DESC`, so newest orders come first and tied timestamps remain deterministic. Product names, unit prices, line totals, order totals, correlation IDs and original timestamps are read from immutable orders, never joined to the current catalogue.
+
+History accepts `dateFrom`, `dateTo`, `pageSize`, `continuationToken` and `includeTotalCount`. Date bounds are **inclusive**. Dates must be full ISO 8601 UTC timestamps with `Z` or `+00:00` and up to seven fractional-second digits; local timestamps, nonzero offsets, invalid calendar dates and reversed ranges return 400 ProblemDetails. URL-encode `+` if using `+00:00`. Query parameters are normalized to the existing persisted DateTimeOffset UTC representation (`+00:00`, with serializer-trimmed fractional seconds), preserving old orders without rewriting them. The query assumes orders were stored by the established UTC serializer; external writers using inconsistent date-string formats are outside this contract. The future React UI will display local time, defaulting to **Asia/Kolkata (IST)**; no frontend change is part of this gate.
+
+Continuation tokens wrap the **actual Cosmos SDK token** with ASP.NET Core Data Protection authenticated encryption. A fingerprint binds each token to endpoint/query version, Cosmos endpoint/database/container/partition, SDK assembly version, filters, sort, page size and count option; history also binds the demo user. Tokens are opaque query state, not authentication. Tampered, oversized, malformed, cross-query, cross-user and mismatched-option tokens return sanitized **400 ProblemDetails**. Keep the filters/options/user unchanged between pages. Trimming text filters and equivalent UTC timestamp spellings are normalized, but clients should otherwise repeat the same values. Invalid sizes/filters/dates also return 400; unavailable storage/indexes return sanitized 503. The legacy bare products endpoint preserves its prior 503 JSON error for old clients.
+
+The catalogue query-version scope was deliberately advanced for the merchandise correction: older catalogue continuation tokens return 400 and require restarting at the first page. This invalidates only query cursors, not product ETags, cart requests, checkout request IDs, orders or order-history tokens. Equivalent known franchise aliases normalize to the same restriction; changing to a different franchise or merchandise category cannot silently continue an earlier query.
+
+Data Protection uses the local Windows user-profile key ring outside the repository with application name `IPLFranchiseStore`. Tokens survive API recreation with that same key ring, as verified by an emulator test. Losing keys, changing SDK/query/container versions or moving between unshared key rings can invalidate tokens: restart from the first page. A future multi-instance deployment must share and protect its key ring. No continuation signing/encryption keys are committed or hard-coded.
+
+Provisioning adds these required composite indexes:
+
+```text
+(/name ASC, /id ASC)
+(/createdAt DESC, /id DESC)
+```
+
+New containers receive them at creation. Existing containers receive missing composites through an ETag-conditional **metadata-only** indexing-policy update; existing index paths/composites and all document values/ETags are preserved. After an update, provisioning polls index transformation progress within the existing startup timeout. Large-container transformations can outlast that timeout; queries may return 503 until index provisioning is ready. Index creation/rebuilding and larger indexes add RU/storage/write costs. The normal consistent all-path indexing policy remains the baseline; custom policies excluding query fields require separate review.
+
+Fixed-dataset tests enumerate 124 persisted products and both users' order histories across pages without duplicates/omissions, cover all eight filter-presence combinations, duplicate-name/timestamp ordering, counts, UTC subsecond boundaries, token misuse and historical snapshots. They also prove additive/idempotent index upgrades preserve an existing product's price, inventory and ETag. Shared isolated emulator test fixtures provision 4,000 RU/s to keep indexed bulk setup and large checkout verification from becoming default-400-RU throttling tests; application/production-demo throughput and retry semantics are unchanged.
+
+Continuation paging is not a frozen cross-request snapshot. Concurrent inserts/deletes or product-name changes can affect subsequent pages; the no-duplicates/no-omissions verification applies to a fixed dataset. Single-store partition scalability limits, development authentication limitations, and previous checkout/cart/audit invariants remain unchanged.
+
+### Product details and bounded compatibility
+
+GET /api/v1/products/{id} point-reads the persisted product in the store partition and returns the same complete, enriched Product representation as catalogue items. Unknown IDs or non-product documents return 404 ProblemDetails; dependency failures return sanitized 503 ProblemDetails. No document is rewritten. Example: GET /api/v1/products/csk-cap.
+
+The legacy list cap is a deliberate compatibility correction required by the assessment, not a promise that legacy callers will still receive the entire catalogue. Use paged=true for all new clients. Follow nextContinuationToken until null, including after empty pages.

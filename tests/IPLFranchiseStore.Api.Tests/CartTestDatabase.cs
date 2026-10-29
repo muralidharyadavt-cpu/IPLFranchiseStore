@@ -25,6 +25,9 @@ public sealed class CartTestDatabase : IAsyncLifetime
         Store = new CosmosStore(cosmos, Settings);
         Start();
         await Store.Container.ReadContainerAsync();
+        // Emulator-only fixture: leave room for indexed bulk data and 63-operation checkout
+        // transactions without turning verification reads into default-400-RU rate-limit tests.
+        await Store.Container.ReplaceThroughputAsync(4000);
     }
 
     private void Start()

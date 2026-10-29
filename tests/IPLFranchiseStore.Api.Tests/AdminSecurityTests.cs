@@ -35,5 +35,7 @@ public sealed class AdminSecurityTests
         using var order = await http.GetAsync("/api/v1/orders/" + Guid.NewGuid().ToString("D"));
         Assert.Equal(HttpStatusCode.NotFound, checkout.StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, order.StatusCode);
+        using var history = await http.GetAsync("/api/v1/orders");
+        Assert.Equal(HttpStatusCode.NotFound, history.StatusCode);
     }
 }

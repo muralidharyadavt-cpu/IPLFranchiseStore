@@ -1,5 +1,6 @@
 using IPLFranchiseStore.Api;
 using Microsoft.Azure.Cosmos;
+using Microsoft.AspNetCore.DataProtection;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddSingleton(services => services.GetRequiredService<IConfiguration>()
@@ -9,6 +10,10 @@ builder.Services.AddSingleton<CosmosStore>();
 builder.Services.AddSingleton<InventoryService>();
 builder.Services.AddSingleton<CartService>();
 builder.Services.AddSingleton<CheckoutService>();
+builder.Services.AddDataProtection().SetApplicationName("IPLFranchiseStore");
+builder.Services.AddSingleton<CosmosPaging>();
+builder.Services.AddSingleton<CatalogueService>();
+builder.Services.AddSingleton<OrderHistoryService>();
 builder.Services.AddProblemDetails();
 builder.Services.Configure<RouteHandlerOptions>(options => options.ThrowOnBadRequest = false);
 var app = builder.Build();
@@ -44,17 +49,7 @@ app.MapGet("/api/v1/health/dependencies", async (IServiceProvider services, Canc
         return Results.Json(new { status = "unhealthy", cosmos = "unavailable" }, statusCode: 503);
     }
 });
-app.MapGet("/api/v1/products", async (IServiceProvider services, CancellationToken cancellationToken) =>
-{
-    try
-    {
-        return Results.Ok(await services.GetRequiredService<CosmosStore>().GetProductsAsync(cancellationToken));
-    }
-    catch (Exception)
-    {
-        return Results.Json(new { error = "Product store unavailable." }, statusCode: 503);
-    }
-});
+app.MapQueries();
 
 app.MapDevelopmentAdmin();
 app.MapDemoCarts();
