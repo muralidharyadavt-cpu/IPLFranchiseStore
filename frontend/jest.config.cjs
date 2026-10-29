@@ -1,0 +1,1 @@
+module.exports = { testEnvironment: 'jsdom', transform: { '^.+\\.[tj]sx?$': 'babel-jest' }, setupFiles: ['<rootDir>/src/testPolyfills.cjs'], setupFilesAfterEnv: ['<rootDir>/src/testSetup.ts'], testMatch: ['<rootDir>/src/**/*.test.[tj]s?(x)'], clearMocks: true };

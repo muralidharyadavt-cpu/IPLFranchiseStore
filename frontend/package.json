@@ -4,19 +4,35 @@
   "version": "0.1.0",
   "type": "module",
   "packageManager": "npm@11.12.1",
-  "engines": { "node": "24.15.0", "npm": "11.12.1" },
+  "engines": {
+    "node": "24.15.0",
+    "npm": "11.12.1"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "jest --runInBand"
   },
   "dependencies": {
     "react": "19.3.1",
-    "react-dom": "19.3.1"
+    "react-dom": "19.3.1",
+    "react-router-dom": "^7.18.5"
   },
   "devDependencies": {
+    "@babel/core": "^7.29.7",
+    "@babel/preset-env": "^7.29.7",
+    "@babel/preset-react": "^7.29.7",
+    "@babel/preset-typescript": "^7.29.7",
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/react": "^16.3.3",
+    "@testing-library/user-event": "^14.6.8",
+    "@types/jest": "^30.0.0",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
+    "babel-jest": "^30.5.2",
+    "jest": "^30.5.2",
+    "jest-environment-jsdom": "^30.5.2",
     "typescript": "7.0.2",
     "vite": "8.3.5"
   }
