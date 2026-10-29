@@ -6,6 +6,8 @@ public sealed record CartLine(string ProductId, int Quantity, decimal AcceptedPr
 public sealed record CustomerCart(string Id, string StoreId, string UserId, string Version, List<CartLine> Lines, DateTimeOffset UpdatedAt)
 {
     public string Type { get; init; } = "cart";
+    public string? LastCompletedOrderId { get; init; }
+    public DateTimeOffset? LastCompletedAt { get; init; }
     [JsonPropertyName("_etag")]
     public string? ETag { get; init; }
 }

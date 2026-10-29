@@ -31,5 +31,9 @@ public sealed class AdminSecurityTests
         using var addLine = await http.PostAsJsonAsync("/api/v1/demo-users/test-user/cart/lines", new { });
         Assert.Equal(HttpStatusCode.NotFound, cart.StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, addLine.StatusCode);
+        using var checkout = await http.PostAsJsonAsync("/api/v1/orders/checkout", new { });
+        using var order = await http.GetAsync("/api/v1/orders/" + Guid.NewGuid().ToString("D"));
+        Assert.Equal(HttpStatusCode.NotFound, checkout.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, order.StatusCode);
     }
 }

@@ -1,6 +1,6 @@
 # IPL Franchise Store
 
-Full-stack take-home assignment scaffold with Cosmos DB product storage and create-only seeding.
+Full-stack take-home assignment with Cosmos DB products, audited inventory, persistent carts and atomic demo checkout.
 
 - `backend/IPLFranchiseStore.Api`: ASP.NET Core Web API targeting .NET 10.
 - `frontend`: React, TypeScript, and Vite.
@@ -56,7 +56,7 @@ Startup creates the database/container if missing and inserts four products with
 
 `GET /api/v1/products` reads all product documents in this store partition (no search or public pagination yet). Prices are decimal INR amounts; `type` is the document discriminator `product`. `createdAt` and `updatedAt` are UTC timestamps. `GET /api/v1/health/dependencies` reads container metadata and returns HTTP 200 when available or sanitized HTTP 503 when unavailable. The existing `/api/v1/health` remains a liveness check. Products return sanitized HTTP 503 if storage cannot be read. No credentials or SDK exception details are sent to clients.
 
-One logical partition deliberately co-locates the initial store's products so a future transactional batch can atomically update multiple products within that partition. No checkout or transactions are implemented here. This cannot provide atomic checkout across store partitions. A single hot store cannot scale horizontally across logical partitions; its normal limits are 20 GB and 10,000 RU/s, and actual throughput can be lower. Before growth, revisit partitioning and checkout consistency rather than treating one partition as an unlimited database. See [Cosmos partitioning](https://learn.microsoft.com/en-us/azure/cosmos-db/partitioning-overview).
+One logical partition deliberately co-locates the initial store's products so a transactional batch can atomically update multiple products within that partition. Checkout now uses this in Gate 2B below. This cannot provide atomic checkout across store partitions. A single hot store cannot scale horizontally across logical partitions; its normal limits are 20 GB and 10,000 RU/s, and actual throughput can be lower. Before growth, revisit partitioning and checkout consistency rather than treating one partition as an unlimited database. See [Cosmos partitioning](https://learn.microsoft.com/en-us/azure/cosmos-db/partitioning-overview).
 
 Run `dotnet restore`, `dotnet build`, and `dotnet test` after configuring the key. The emulator-backed test is mandatory (fails with an actionable message if the key is missing), uses a unique `IPLFranchiseStoreTests-*` database, verifies `/storeId`, HTTP retrieval and inventory preservation across two API hosts, and deletes only its own test database. It never resets the application's inventory.
 
@@ -96,7 +96,7 @@ The service uses one transactional batch containing an ETag-conditional product 
 
 The emulator suite uses unique disposable test databases and never adjusts the application's seed inventory. It checks HTTP status mappings, exact audit values, simultaneous stock/price writers, an interleaving between point read and conditional batch, and rollback when audit creation fails. Host setup/teardown is serialized to avoid competing emulator provisioning; the race tests still issue simultaneous requests explicitly.
 
-A future checkout service should reuse these invariants: validate positive requested quantities, calculate remaining stock without underflow, condition each product write on the version read, and commit all product writes plus audit records together in one store partition. A conflict must abort the entire checkout for explicit review/retry. Current single-product admin services do not implement checkout; batching multiple independent service calls would not be an atomic checkout. Cosmos transactional batches are limited to 100 operations, 2 MB, and five seconds ([transactional batch documentation](https://learn.microsoft.com/en-us/azure/cosmos-db/transactional-batch)).
+The Gate 2B checkout service reuses these invariants: validate positive requested quantities, calculate remaining stock without underflow, condition each product write on the version read, and commit all product writes plus audit records together in one store partition. A conflict aborts the entire checkout for explicit review/retry. Single-product admin services remain separate; batching multiple independent service calls would not be an atomic checkout. Cosmos transactional batches are limited to 100 operations, 2 MB, and five seconds ([transactional batch documentation](https://learn.microsoft.com/en-us/azure/cosmos-db/transactional-batch)).
 
 ## Gate 2A: persistent demo carts and durable idempotency
 
@@ -156,7 +156,7 @@ Content-Type: application/json
 {"requestId":"39202eeb-5d79-4786-871c-f8899328a641","expectedCartVersion":"<cart-version-uuid>"}
 ```
 
-On GET, each line is compared with its current product. Any product version, price or stock change requires explicit acknowledgement; stock is flagged even if sufficient units remain. The total uses current prices with decimal INR arithmetic, while accepted prices/stock/version remain visible. Quantity edits preserve existing accepted snapshots and do not implicitly accept changes. Missing products are marked unavailable and total becomes null. Insufficient stock blocks eligibility and cannot be acknowledged until quantity is reduced or the line is removed. `canCheckout` is a point-in-time eligibility indicator only; no checkout endpoint or inventory reservation exists, and a future checkout must revalidate everything atomically.
+On GET, each line is compared with its current product. Any product version, price or stock change requires explicit acknowledgement; stock is flagged even if sufficient units remain. The total uses current prices with decimal INR arithmetic, while accepted prices/stock/version remain visible. Quantity edits preserve existing accepted snapshots and do not implicitly accept changes. Missing products are marked unavailable and total becomes null. Insufficient stock blocks eligibility and cannot be acknowledged until quantity is reduced or the line is removed. `canCheckout` is a point-in-time eligibility indicator only; carts do not reserve inventory. Gate 2B checkout revalidates everything atomically rather than trusting this flag.
 
 To acknowledge, first GET and review the current cart and all product versions, then send the current cart version and the quoted `currentProductVersion` for **every** line:
 
@@ -176,3 +176,80 @@ Successful commands create the immutable request result and create/ETag-conditio
 **Product guard protocol:** An emulator-backed probe demonstrated that batch `ReadItem` ignores `IfMatchEtag`; it is not used as a concurrency guarantee. A separate `productGuard` document per product is lazily created. Snapshot-accepting cart commands and InventoryService read this guard **before** the product, and conditionally replace the guard in the same batch as their own writes. InventoryService now commits product + audit + guard atomically. Cart batches commit cart + request result + guards; product documents, product ETags and inventory are untouched by carts. These short-lived write fences reserve no stock and may cause a conservative 412 during contention even when the product value did not change. All future application product writers must participate in this protocol. Direct account-key edits or other external writers bypassing it are outside the guarantee, just as they bypass application validation/auditing. Do not run an older API instance that writes products without guards alongside this version.
 
 GET cart is read-only and does not provide a locked checkout snapshot; changes may happen immediately after any response. The isolated emulator tests prove single application of concurrent duplicate commands, replay after recreating the API, snapshot warning/acknowledgement state, and rollback of cart/result writes for forced product-guard, cart-ETag and request-record conflicts. They never alter the application's seed inventory.
+
+## Gate 2B: atomic checkout and immutable orders
+
+Development-only endpoints:
+
+| Method | Route | Identity |
+| --- | --- | --- |
+| POST | `/api/v1/orders/checkout` | `X-Demo-User-Id` header matching the cart's demo user |
+| GET | `/api/v1/orders/{orderId}` | Same header; another user's order returns 404 |
+
+The explicit demo identity follows the cart's user naming rules. The header is caller-supplied and is **not authentication**. Both routes are unmapped in Production/Staging until verified identity claims and ownership authorization are implemented. Do not expose the development API beyond a trusted local environment. Payment processing is not implemented.
+
+GET the cart, review/acknowledge any product warnings, and submit its exact `version` with a client-generated non-zero UUID `orderId`. Checkout uses the persisted cart; the client does not send or control order prices, totals or line snapshots.
+
+```http
+POST /api/v1/orders/checkout
+X-Demo-User-Id: demo-alice
+Content-Type: application/json
+
+{"orderId":"c4f8f5ab-fda2-4ac2-b79b-5aec758d7108","expectedCartVersion":"<version-from-GET-cart>"}
+```
+
+Successful checkout and matching retries return HTTP **201 Created** with `Location: /api/v1/orders/{orderId}` and the original persisted order, for example:
+
+```json
+{
+  "id": "order-c4f8f5abfda24ac2b79b5aec758d7108",
+  "storeId": "ipl-store", "orderId": "c4f8f5ab-fda2-4ac2-b79b-5aec758d7108",
+  "userId": "demo-alice", "createdAt": "2026-10-29T14:00:00+00:00",
+  "currency": "INR", "total": 1999,
+  "lines": [{"productId":"mi-jersey","name":"MI Jersey","quantity":1,"unitPrice":1999,"lineTotal":1999,"productVersion":"\"<purchased-product-etag>\""}],
+  "purchasedCartVersion": "<version-from-GET-cart>", "correlationId": "<server-request-correlation>", "type": "order"
+}
+```
+
+```http
+GET /api/v1/orders/c4f8f5ab-fda2-4ac2-b79b-5aec758d7108
+X-Demo-User-Id: demo-alice
+```
+
+GET returns HTTP 200 and the stored historical order; it never joins current product prices into an order. Orders are create-only through this API, and no order update/delete routes exist. A database account-key holder can still edit documents directly; immutable here means application behavior, not a tamper-proof ledger. Full order-history pagination is deferred.
+
+CheckoutService rejects empty carts, invalid/duplicate lines, missing products, quantities outside 1–10, insufficient stock, and any mismatch between accepted and current price/stock/product ETag. Even a sufficient but changed stock count requires explicit acknowledgement. It collects failing product IDs, codes and reasons in a ProblemDetails `failures` extension. All line failures are discovered before business writes: zero stock is deducted, no order/audit is created and the cart remains intact. A rejection may persist an idempotency result and lazily create guard metadata; neither is a purchase.
+
+| Status | Meaning |
+| --- | --- |
+| 201 | Checkout committed, or original committed result replayed |
+| 400 | Invalid UUID/identity/body, missing expected cart version, or invalid stored line/product data |
+| 404 | Missing product; missing order or wrong user on GET |
+| 409 | Empty cart, insufficient stock, conflicting order ID/user/payload, or a batch create conflict |
+| 412 | Cart changed, product acknowledgement required, or concurrent product/guard/cart change |
+| 413 | More than 20 distinct lines or the supported document-size budget exceeded |
+| 503 | Storage/transport result uncertain; retry the identical order ID, user and original payload |
+
+Example error:
+
+```json
+{"type":"https://tools.ietf.org/html/rfc9110#section-15.5.10","title":"Checkout rejected; no products were purchased.","status":409,"failures":[{"productId":"kkr-signed-photo","code":"insufficientStock","reason":"Insufficient stock for this quantity."}]}
+```
+
+For **N** products, exactly one successful Cosmos TransactionalBatch in `StoreData` / `storeId = ipl-store` performs **3N + 3** operations:
+
+1. ETag-conditionally replace the purchased cart with empty lines, a new version, `lastCompletedOrderId` and UTC `lastCompletedAt`.
+2. Create the order and its durable checkout result (two create-only documents).
+3. For every line: ETag-conditionally replace the product with deducted stock, create one `checkout` stock audit, and ETag-conditionally replace that product's guard.
+
+All operations commit or none do. Audit actor is the demo user, timestamp matches the order/product update timestamp, reason includes the order ID, and correlation ID is generated by the HTTP request. Monetary validation and total arithmetic use decimal INR with whole paise, never binary floating-point calculations. Emptying/versioning the cart prevents a second order ID from purchasing the same cart; adding new lines later is a separate cart version and can be purchased normally.
+
+**Maximum order size is 20 distinct products, each quantity 1–10 (63 batch operations).** Before constructing/executing the batch, the service measures the serialized UTF-8 bytes of every document, including the order duplicated inside the stored result, product replacements, audits, guards and completed cart. Their combined budget is capped at **1 MiB**, deliberately leaving a further MiB below Cosmos's 2 MB wire limit for operation envelopes and metadata. Oversized requests return 413 before any purchase writes; they are never split into multiple transactions. The 20-line success case and both count/byte rejection cases run against the emulator.
+
+Order IDs are globally unique in this store, unlike user-scoped cart request IDs. `checkout-request-{orderId}` stores the user, operation, SHA-256 fingerprint of canonical order ID + user + original expected cart version, UTC timestamp, result and status. Its creation is in the same transaction as stock, order, audit and cart completion. A matching retry checks this durable record **before** checking the current cart and returns the original order/status, even after process/service restart, a later cart, or an admin price update. Reusing the ID with another expected cart version or another user returns 409 without exposing the original order. Validly identified rejections are durable too. After reviewing a rejection, submit a new order ID; after a 503/lost response, retry the identical original request with the same ID. There is no automatic application retry with refreshed product/cart ETags and no automatic price acceptance. Record retention has no TTL in this gate.
+
+**Guard review and proof:** InventoryService reads a guard before its product, then includes its conditional guard replacement alongside the product and audit in one batch. Cart additions/quantity edits/acknowledgements read guards before products and conditionally replace them alongside cart/request writes. Checkout follows the same ordering and includes both conditional product and guard replacements in its purchase batch. Thus an acknowledgement or admin write between checkout validation and commit invalidates checkout, and checkout invalidates an already-validated acknowledgement. An acknowledgement can also invalidate an admin write even though the product ETag itself has not changed. Guard conflicts cause conservative 412 responses, never silent retries. Batch reads with ignored If-Match headers are not used as a correctness mechanism.
+
+Tests use independently created Cosmos clients for final-unit competition, same-ID duplicates and different-ID same-cart races; a test-only barrier forces both independent services past validation before either commits. Additional independent-client interleavings prove admin↔cart-acknowledgement↔checkout guard participation in both directions. Tests append a deliberately conflicting final operation to a real emulator batch and confirm rollback of every product/order/audit/cart write. Another test commits successfully, then injects an IOException before delivering the success response (HTTP 503); a normal retry returns the persisted original order without another deduction. Test hooks are protected service overrides only; no HTTP failure switches are exposed.
+
+The concurrency guarantee assumes all application writers use the protocol and a single supported store partition. Direct account-key writers, old API versions bypassing guards, external payment effects, cross-partition purchases, multi-region production behavior and tamper-proof storage are outside this verified gate. Seed initialization remains create-only and never overwrites inventory. All automated/live verification mutations use dedicated isolated emulator databases.

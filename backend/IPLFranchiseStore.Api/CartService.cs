@@ -14,7 +14,7 @@ public class CartService(CosmosStore store)
     public static string RequestRecordId(string userId, Guid requestId) => "cart-request-" + Hash(userId) + "-" + requestId.ToString("N");
     private static string Hash(string value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
 
-    private static void ValidateUser(string userId)
+    public static void ValidateUser(string userId)
     {
         if (!Regex.IsMatch(userId, "\\A[a-zA-Z0-9_-]{1,64}\\z"))
             throw new CartException(400, "Demo user ID must contain 1–64 letters, digits, underscores or hyphens.");

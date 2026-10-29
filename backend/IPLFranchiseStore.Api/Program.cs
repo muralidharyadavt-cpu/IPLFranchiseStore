@@ -8,6 +8,7 @@ builder.Services.AddSingleton<CosmosClient>(services => CosmosStore.CreateClient
 builder.Services.AddSingleton<CosmosStore>();
 builder.Services.AddSingleton<InventoryService>();
 builder.Services.AddSingleton<CartService>();
+builder.Services.AddSingleton<CheckoutService>();
 builder.Services.AddProblemDetails();
 builder.Services.Configure<RouteHandlerOptions>(options => options.ThrowOnBadRequest = false);
 var app = builder.Build();
@@ -57,6 +58,7 @@ app.MapGet("/api/v1/products", async (IServiceProvider services, CancellationTok
 
 app.MapDevelopmentAdmin();
 app.MapDemoCarts();
+app.MapDemoOrders();
 app.Run();
 
 public partial class Program;
