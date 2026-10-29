@@ -27,5 +27,9 @@ public sealed class AdminSecurityTests
         }
         using var audits = await http.GetAsync("/api/v1/admin/products/mi-jersey/audits");
         Assert.Equal(HttpStatusCode.NotFound, audits.StatusCode);
+        using var cart = await http.GetAsync("/api/v1/demo-users/test-user/cart");
+        using var addLine = await http.PostAsJsonAsync("/api/v1/demo-users/test-user/cart/lines", new { });
+        Assert.Equal(HttpStatusCode.NotFound, cart.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, addLine.StatusCode);
     }
 }

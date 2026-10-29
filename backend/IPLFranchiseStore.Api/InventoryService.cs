@@ -76,6 +76,7 @@ public class InventoryService(CosmosStore store)
     private async Task<Product> MutateAsync(string id, string etag, string actor, string reason, string correlationId,
         string operation, Func<Product, (Product Product, decimal OldValue, decimal NewValue)> change, CancellationToken ct)
     {
+        var guard = await new ProductConcurrency(store).ReadGuardAsync(id, ct);
         var original = await ReadProductAsync(id, ct);
         if (original.ETag != etag)
             throw new InventoryException(412, "Product changed. Refresh and explicitly resubmit your adjustment.");
@@ -85,10 +86,11 @@ public class InventoryService(CosmosStore store)
         var audit = new InventoryAudit(NewAuditId(), original.StoreId, original.Id, actor.Trim(), now,
             reason.Trim(), operation, oldValue, newValue, correlationId);
 
-        using var response = await store.Container.CreateTransactionalBatch(new PartitionKey(original.StoreId))
+        var batch = store.Container.CreateTransactionalBatch(new PartitionKey(original.StoreId))
             .ReplaceItem(original.Id, updated, new TransactionalBatchItemRequestOptions { IfMatchEtag = etag })
-            .CreateItem(audit)
-            .ExecuteAsync(ct);
+            .CreateItem(audit);
+        ProductConcurrency.AddCheck(batch, guard);
+        using var response = await batch.ExecuteAsync(ct);
         if (!response.IsSuccessStatusCode)
         {
             var status = response.StatusCode;

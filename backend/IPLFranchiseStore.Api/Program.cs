@@ -7,7 +7,11 @@ builder.Services.AddSingleton(services => services.GetRequiredService<IConfigura
 builder.Services.AddSingleton<CosmosClient>(services => CosmosStore.CreateClient(services.GetRequiredService<CosmosSettings>()));
 builder.Services.AddSingleton<CosmosStore>();
 builder.Services.AddSingleton<InventoryService>();
+builder.Services.AddSingleton<CartService>();
+builder.Services.AddProblemDetails();
+builder.Services.Configure<RouteHandlerOptions>(options => options.ThrowOnBadRequest = false);
 var app = builder.Build();
+app.UseStatusCodePages();
 var settings = app.Services.GetRequiredService<CosmosSettings>();
 
 // Missing credentials or an unavailable emulator must not prevent liveness/failure reporting.
@@ -52,6 +56,7 @@ app.MapGet("/api/v1/products", async (IServiceProvider services, CancellationTok
 });
 
 app.MapDevelopmentAdmin();
+app.MapDemoCarts();
 app.Run();
 
 public partial class Program;
