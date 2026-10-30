@@ -18,6 +18,25 @@ public sealed class CosmosStore(CosmosClient client, CosmosSettings settings)
     public const string PartitionKeyPath = "/storeId";
     public Container Container => client.GetContainer(settings.DatabaseName, settings.ContainerName);
 
+    public async Task<Product?> ReadProductAsync(string id, CancellationToken ct)
+    {
+        try
+        {
+            var response = await Container.ReadItemAsync<JsonElement>(id, new PartitionKey(StoreId), cancellationToken: ct);
+            var document = response.Resource;
+            if (!document.TryGetProperty("type", out var type) || type.ValueKind != JsonValueKind.String || type.GetString() != "product")
+                return null;
+            // Validate the discriminator before applying Product's required-field contract.
+            return document.Deserialize<Product>(new JsonSerializerOptions(JsonSerializerDefaults.Web))! with { ETag = response.ETag };
+        }
+        catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+        {
+            // SDK 404 can also mean a missing database/container. That is a dependency failure.
+            await Container.ReadContainerAsync(cancellationToken: ct);
+            return null;
+        }
+    }
+
     public static CosmosClient CreateClient(CosmosSettings settings) => new(
         settings.Endpoint, settings.Key, new CosmosClientOptions
         {

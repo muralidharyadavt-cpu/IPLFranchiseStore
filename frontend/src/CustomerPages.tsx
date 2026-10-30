@@ -3,7 +3,7 @@ import { Link, useLocation, useParams } from 'react-router-dom';
 import { ApiError, customerApi } from './api';
 import type { Cart, CartLine, Order, OrderPage, Product } from './api';
 import { useCustomer } from './customerSession';
-import { formatDate, formatPrice } from './formatting';
+import { browserTimeZone, defaultTimeZone, formatDate, formatPrice, readTimeZone, timeZoneStorageKey } from './formatting';
 
 const money = (value: number | null) => value === null ? 'Unavailable' : formatPrice(value);
 export function AddToCart({ product }: { product: Product }) {
@@ -73,8 +73,8 @@ export function CartPage({ checkout = false }: { checkout?: boolean }) {
     </>}
   </>;
 }
-export function OrderSummary({ order }: { order: Order }) {
-  return <article className="order-summary"><h2>Order {order.orderId}</h2><p><time dateTime={order.createdAt}>{formatDate(order.createdAt)}</time></p>
+export function OrderSummary({ order, timeZone = readTimeZone() }: { order: Order; timeZone?: string }) {
+  return <article className="order-summary"><h2>Order {order.orderId}</h2><p><time dateTime={order.createdAt}>{formatDate(order.createdAt, timeZone)}</time></p>
     <ul>{order.lines.map(line => <li key={line.productId}><Link to={`/products/${encodeURIComponent(line.productId)}`}>{line.name}</Link> — {line.quantity} × {formatPrice(line.unitPrice)} = {formatPrice(line.lineTotal)}</li>)}</ul><p className="price">Order total: {formatPrice(order.total)}</p><p className="muted">Historical prices at purchase, inclusive of tax.</p></article>;
 }
 export function OrderDetails() {
@@ -96,6 +96,9 @@ export function OrderDetails() {
 }
 export function OrderHistory() {
   const { user } = useCustomer();
+  const [timeZone, setTimeZone] = useState(readTimeZone);
+  const [zoneError, setZoneError] = useState('');
+  const localZone = browserTimeZone();
   const [from, setFrom] = useState(''); const [to, setTo] = useState('');
   const [filters, setFilters] = useState({ dateFrom: '', dateTo: '' });
   const [tokens, setTokens] = useState<(string | undefined)[]>([undefined]);
@@ -112,7 +115,12 @@ export function OrderHistory() {
       .then(value => { if (!controller.signal.aborted) setPage(value); }).catch(reason => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : 'Unable to load orders.'); }).finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
   }, [user, pageUser, filters, tokens, attempt]);
-  return <><h1>Order history</h1><p>Newest first. Dates below are filters in UTC; order times display in IST (Asia/Kolkata).</p>
+  return <><h1>Order history</h1><p>Newest first. Date filters remain UTC; display time zone: {timeZone}.</p>
+    <label htmlFor="display-time-zone">Display time zone<select id="display-time-zone" value={timeZone} onChange={e => {
+      const next = e.target.value; setTimeZone(next); setZoneError('');
+      try { sessionStorage.setItem(timeZoneStorageKey, next); } catch { setZoneError('Time zone applied for this page but could not be saved for navigation or refresh.'); }
+    }}>{Array.from(new Set([defaultTimeZone, 'UTC', localZone, timeZone])).map(zone => <option key={zone} value={zone}>{zone === defaultTimeZone ? 'IST (default)' : zone === localZone && zone !== 'UTC' ? `Browser local (${zone})` : zone}</option>)}</select></label>
+    {zoneError && <p role="alert" aria-live="polite">{zoneError}</p>}
     <form className="filters" onSubmit={e => { e.preventDefault();
       const dateFrom = from ? new Date(from + 'Z') : null; const dateTo = to ? new Date(to + 'Z') : null;
       if ((dateFrom && Number.isNaN(dateFrom.getTime())) || (dateTo && Number.isNaN(dateTo.getTime())) || (dateFrom && dateTo && dateFrom > dateTo)) { setValidation('Enter a valid UTC range with From before To.'); return; }
@@ -122,7 +130,7 @@ export function OrderHistory() {
     {loading || pageUser !== user ? <p role="status">Loading orders…</p> : error ? <div role="alert" aria-live="assertive"><p>{error}</p><button onClick={() => setAttempt(n => n + 1)}>Retry history</button></div> : page && <>
       <p role="status">{page.totalCount ?? page.items.length} orders · Page {tokens.length}</p>
       {page.items.length === 0 && <p>{page.nextContinuationToken ? 'No orders on this page. Continue to the next page.' : 'No orders found.'}</p>}
-      {page.items.map(order => <div key={order.orderId}><OrderSummary order={order} /><Link to={`/orders/${order.orderId}`}>View order {order.orderId}</Link></div>)}
+      {page.items.map(order => <div key={order.orderId}><OrderSummary order={order} timeZone={timeZone} /><Link to={`/orders/${order.orderId}`}>View order {order.orderId}</Link></div>)}
     </>}
     <nav className="pagination" aria-label="Order pages"><button disabled={loading || pageUser !== user || tokens.length === 1} onClick={() => setTokens(previous => previous.slice(0, -1))}>Previous</button><span>Page {tokens.length}</span><button disabled={loading || pageUser !== user || !page?.nextContinuationToken} onClick={() => { if (page?.nextContinuationToken) setTokens(previous => [...previous, page.nextContinuationToken!]); }}>Next</button></nav>
   </>;

@@ -1,11 +1,14 @@
 import { useEffect, useState } from 'react';
-import { Link, Navigate, NavLink, Route, Routes, useParams } from 'react-router-dom';
+import { Link, Navigate, Route, Routes, useParams } from 'react-router-dom';
 import { ApiError, catalogueApi } from './api';
 import type { Product, ProductPage } from './api';
 
 import { formatPrice } from './formatting';
 export { formatPrice } from './formatting';
-import { CustomerProvider, CustomerStatus } from './customerSession';
+import AdminPage from './AdminPage';
+import { CustomerProvider } from './customerSession';
+import { DemoRoleProvider, useDemoRole } from './demoRole';
+import { RoleLayout } from './Layouts';
 import { AddToCart, CartPage, OrderHistory, OrderDetails } from './CustomerPages';
 const stockLabels = { inStock: 'In stock', lowStock: 'Low stock', outOfStock: 'Out of stock' };
 function ProductFacts({ product }: { product: Product }) {
@@ -91,8 +94,22 @@ export function ProductDetails() {
       <dl><dt>Available quantity</dt><dd>{product.stock}</dd><dt>Product ID</dt><dd>{product.id}</dd><dt>Franchise ID</dt><dd>{product.franchiseId}</dd></dl><p className="muted">Prices include tax. Stock is subject to change.</p></article>}
   </>;
 }
-function Pending({ title }: { title: string }) { return <><h1>{title}</h1><p>This page is pending implementation. No actions are available yet.</p><Link to="/products">Browse products</Link></>; }
+function LandingPage() {
+  return <Navigate to={useDemoRole().role === 'Admin' ? '/admin' : '/products'} replace />;
+}
+function AdminRoute() {
+  const { role, enabled } = useDemoRole();
+  if (!enabled) return <div role="alert"><h1>Admin unavailable</h1><p>Production builds do not enable demo administrative editing or role switching.</p></div>;
+  if (role !== 'Admin') return <div role="alert"><h1>Access Denied</h1><p>The Shopper experience cannot access admin tools. A development demo role is required.</p><Link to="/products">Browse products</Link></div>;
+  return <AdminPage />;
+}
 export default function App() {
-  return <CustomerProvider><a className="skip-link" href="#main">Skip to content</a><header className="site-header"><Link className="brand" to="/products">IPL Franchise Store</Link><nav aria-label="Main navigation">{['Products', 'Cart', 'Checkout', 'Orders', 'Admin'].map(name => <NavLink key={name} to={`/${name.toLowerCase()}`}>{name}</NavLink>)}</nav></header>
-    <main id="main"><CustomerStatus /><Routes><Route path="/" element={<Navigate to="/products" replace />} /><Route path="/products" element={<Catalogue />} /><Route path="/products/:id" element={<ProductDetails />} /><Route path="/cart" element={<CartPage />} /><Route path="/checkout" element={<CartPage checkout />} /><Route path="/orders" element={<OrderHistory />} /><Route path="/orders/:id" element={<OrderDetails />} />{['Admin'].map(name => <Route key={name} path={`/${name.toLowerCase()}`} element={<Pending title={name} />} />)}<Route path="*" element={<><h1>Page not found</h1><Link to="/products">Browse products</Link></>} /></Routes></main><footer>IPL Franchise Merchandise Store · Prices in INR, inclusive of tax</footer></CustomerProvider>;
+  return <CustomerProvider><DemoRoleProvider><RoleLayout><Routes>
+    <Route path="/" element={<LandingPage />} />
+    <Route path="/products" element={<Catalogue />} /><Route path="/products/:id" element={<ProductDetails />} />
+    <Route path="/cart" element={<CartPage />} /><Route path="/checkout" element={<CartPage checkout />} />
+    <Route path="/orders" element={<OrderHistory />} /><Route path="/orders/:id" element={<OrderDetails />} />
+    <Route path="/admin" element={<AdminRoute />} />
+    <Route path="*" element={<><h1>Page not found</h1><Link to="/products">Browse products</Link></>} />
+  </Routes></RoleLayout></DemoRoleProvider></CustomerProvider>;
 }

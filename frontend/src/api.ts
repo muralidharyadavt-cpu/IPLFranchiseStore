@@ -1,5 +1,5 @@
 export interface Product {
-  id: string; storeId: string; type: string; merchandiseType: string;
+  id: string; storeId: string; type: string; merchandiseType: string | null;
   name: string; franchise: string; franchiseId: string; franchiseName: string;
   description: string; price: number; currency: 'INR'; stock: number;
   stockStatus: 'inStock' | 'lowStock' | 'outOfStock'; isLimitedEdition: boolean;
@@ -101,5 +101,25 @@ export const customerApi = {
     if (query.dateTo) params.set('dateTo', query.dateTo);
     if (query.continuationToken) params.set('continuationToken', query.continuationToken);
     return request(`/api/v1/orders?${params}`, { signal, headers: identity(user) });
+  },
+};
+
+export interface InventoryAudit {
+  id: string; storeId: string; type: 'inventoryAudit'; productId: string; actor: string;
+  timestamp: string; reason: string; operationType: 'priceUpdate' | 'stockAdjustment' | 'checkout';
+  oldValue: number; newValue: number; correlationId: string;
+}
+export interface InventoryChange { expectedETag: string; actor: string; reason: string }
+export interface StockAdjustment extends InventoryChange { quantity: number }
+export interface PriceUpdate extends InventoryChange { price: number }
+export const adminApi = {
+  stock(id: string, command: StockAdjustment): Promise<Product> {
+    return request(`/api/v1/admin/products/${encodeURIComponent(id)}/stock-adjustments`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(command) });
+  },
+  price(id: string, command: PriceUpdate): Promise<Product> {
+    return request(`/api/v1/admin/products/${encodeURIComponent(id)}/price-updates`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(command) });
+  },
+  audits(id: string, signal?: AbortSignal): Promise<InventoryAudit[]> {
+    return request(`/api/v1/admin/products/${encodeURIComponent(id)}/audits`, { signal });
   },
 };

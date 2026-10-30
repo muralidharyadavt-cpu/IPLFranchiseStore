@@ -8,7 +8,7 @@ public static class QueryEndpoints
 
     public static void MapQueries(this WebApplication app)
     {
-        app.MapGet("/api/v1/products", (HttpRequest request, HttpResponse response, IServiceProvider services, CancellationToken ct) => Execute(async () =>
+        app.MapGet("/api/v1/products", (HttpRequest request, HttpResponse response, IServiceProvider services, CancellationToken ct) => Execute(request.HttpContext, app.Logger, "catalogue.list", async () =>
         {
             var supported = new HashSet<string>(["paged", "search", "type", "merchandiseType", "franchise", "pageSize", "continuationToken", "includeTotalCount"], StringComparer.OrdinalIgnoreCase);
             foreach (var query in request.Query)
@@ -32,27 +32,40 @@ public static class QueryEndpoints
                         response.Headers.Append("Link", $"</api/v1/products?paged=true&pageSize=50&continuationToken={Uri.EscapeDataString(page.NextContinuationToken)}>; rel=\"next\"");
                     return Results.Ok(page.Items);
                 }
-                catch (Exception) { return Results.Json(new { error = "Product store unavailable." }, statusCode: 503); }
+                catch (Exception ex)
+                {
+                    LogFailure(request.HttpContext, app.Logger, "catalogue.legacy", ex);
+                    return Results.Json(new { error = "Product store unavailable." }, statusCode: 503);
+                }
             }
             return Results.Ok(await services.GetRequiredService<CatalogueService>().SearchAsync(
                 Parameter(request, "search"), Parameter(request, "type"), Parameter(request, "franchise"),
                 Parameter(request, "pageSize"), Parameter(request, "continuationToken"), Parameter(request, "includeTotalCount"), ct, Parameter(request, "merchandiseType")));
         }));
 
-        app.MapGet("/api/v1/products/{id}", (string id, IServiceProvider services, CancellationToken ct) => Execute(async () =>
+        app.MapGet("/api/v1/products/{id}", (string id, IServiceProvider services, HttpContext context, CancellationToken ct) => Execute(context, app.Logger, "catalogue.details", async () =>
             Results.Ok(await services.GetRequiredService<CatalogueService>().GetAsync(id, services.GetRequiredService<CosmosStore>(), ct))));
 
         if (app.Environment.IsDevelopment())
             app.MapGet("/api/v1/orders", (HttpRequest request, [FromHeader(Name = "X-Demo-User-Id")] string? userId,
-                IServiceProvider services, CancellationToken ct) => Execute(async () => Results.Ok(await services.GetRequiredService<OrderHistoryService>().GetAsync(userId ?? "",
+                IServiceProvider services, CancellationToken ct) => Execute(request.HttpContext, app.Logger, "orders.history", async () => Results.Ok(await services.GetRequiredService<OrderHistoryService>().GetAsync(userId ?? "",
                     Parameter(request, "dateFrom"), Parameter(request, "dateTo"), Parameter(request, "pageSize"),
                     Parameter(request, "continuationToken"), Parameter(request, "includeTotalCount"), ct))));
     }
 
-    private static async Task<IResult> Execute(Func<Task<IResult>> action)
+    private static void LogFailure(HttpContext context, ILogger logger, string operation, Exception ex) =>
+        logger.LogError(new EventId(1001, "UnexpectedApiFailure"),
+            "API operation {Operation} failed. RequestId {RequestId}; TraceId {TraceId}; ExceptionType {ExceptionType}",
+            operation, context.TraceIdentifier, System.Diagnostics.Activity.Current?.Id ?? context.TraceIdentifier, ex.GetType().FullName);
+
+    private static async Task<IResult> Execute(HttpContext context, ILogger logger, string operation, Func<Task<IResult>> action)
     {
         try { return await action(); }
         catch (QueryException ex) { return Results.Problem(statusCode: ex.StatusCode, title: ex.Message); }
-        catch (Exception) { return Results.Problem(statusCode: 503, title: "Query store unavailable. Check database availability and index provisioning."); }
+        catch (Exception ex)
+        {
+            LogFailure(context, logger, operation, ex);
+            return Results.Problem(statusCode: 503, title: "Query store unavailable. Check database availability and index provisioning.");
+        }
     }
 }

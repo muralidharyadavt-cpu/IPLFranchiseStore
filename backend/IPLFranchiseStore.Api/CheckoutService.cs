@@ -26,7 +26,12 @@ public class CheckoutService(CosmosStore store)
     private async Task<T?> ReadOptional<T>(string id, CancellationToken ct)
     {
         try { return (await store.Container.ReadItemAsync<T>(id, Partition, cancellationToken: ct)).Resource; }
-        catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.NotFound) { return default; }
+        catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+        {
+            // Preserve missing-order/receipt behavior only when its container exists.
+            await store.Container.ReadContainerAsync(cancellationToken: ct);
+            return default;
+        }
     }
 
     public async Task<OrderDocument> GetAsync(string userId, string orderId, CancellationToken ct)

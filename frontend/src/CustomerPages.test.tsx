@@ -28,6 +28,33 @@ test('add from catalogue sends UUID, expected version, identity and selected qua
   await screen.findByText('Cart updated successfully.');
 });
 test('details add action works', async () => { open('/products/csk-cap'); await screen.findByText('Official cap'); fireEvent.click(screen.getByRole('button', { name: 'Add to cart: CSK Cap' })); await waitFor(() => expect(api.mutate).toHaveBeenCalledWith('demo-alice', 'add', expect.objectContaining({ quantity: 1, productId: 'csk-cap' }))); });
+test('display time zone is labelled, saved and used in order details without changing UTC', async () => {
+  open('/orders'); await screen.findByText(/30 Oct 2026/);
+  expect(screen.getByLabelText('Display time zone')).toHaveValue('Asia/Kolkata');
+  fireEvent.change(screen.getByLabelText('Display time zone'), { target: { value: 'UTC' } });
+  expect(sessionStorage.getItem('ipl.display-time-zone.v1')).toBe('UTC');
+  expect(screen.getByText(/30 Oct 2026/)).toHaveTextContent('UTC');
+  fireEvent.click(screen.getByRole('link', { name: `View order ${order.orderId}` }));
+  await screen.findByRole('heading', { name: 'Order details' });
+  expect(await screen.findByText(/30 Oct 2026/)).toHaveAttribute('datetime', order.createdAt);
+  expect(screen.getByText(/30 Oct 2026/)).toHaveTextContent('UTC');
+});
+test('saved non-IST timezone is restored on history refresh', async () => {
+  sessionStorage.setItem('ipl.display-time-zone.v1', 'America/New_York');
+  const view = open('/orders'); await screen.findByText(/29 Oct 2026/); view.unmount();
+  open('/orders'); await screen.findByText(/29 Oct 2026/);
+  expect(screen.getByLabelText('Display time zone')).toHaveValue('America/New_York');
+});
+test('browser-local option changes only display, not UTC query filters', async () => {
+  const resolved = new Intl.DateTimeFormat().resolvedOptions();
+  jest.spyOn(Intl.DateTimeFormat.prototype, 'resolvedOptions').mockReturnValue({ ...resolved, timeZone: 'America/New_York' });
+  open('/orders'); await screen.findByText(/30 Oct 2026/);
+  expect(screen.getByRole('option', { name: 'Browser local (America/New_York)' })).toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText('Display time zone'), { target: { value: 'America/New_York' } });
+  expect(screen.getByText(/29 Oct 2026/)).toHaveAttribute('datetime', order.createdAt);
+  expect(api.history).toHaveBeenCalledTimes(1);
+  expect(api.history).toHaveBeenCalledWith('demo-alice', expect.objectContaining({ dateFrom: undefined, dateTo: undefined }), expect.any(AbortSignal));
+});
 test.each(['0', '-1', '11', '1.5', ''])('reject invalid add quantity %s', async quantity => {
   open('/products'); await screen.findByRole('heading', { name: 'CSK Cap' }); fireEvent.change(screen.getByLabelText('Quantity for CSK Cap'), { target: { value: quantity } }); fireEvent.click(screen.getByRole('button', { name: 'Add to cart: CSK Cap' }));
   expect(await screen.findByRole('alert')).toHaveTextContent('Quantity must be 1–10'); expect(api.mutate).not.toHaveBeenCalled();

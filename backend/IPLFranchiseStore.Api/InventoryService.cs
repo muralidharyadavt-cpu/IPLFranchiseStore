@@ -67,10 +67,7 @@ public class InventoryService(CosmosStore store)
 
     private async Task<Product> ReadProductAsync(string id, CancellationToken ct)
     {
-        var response = await store.Container.ReadItemAsync<Product>(id, new PartitionKey(CosmosStore.StoreId), cancellationToken: ct);
-        if (response.Resource.Type != "product")
-            throw new InventoryException(404, "Product not found.");
-        return response.Resource with { ETag = response.ETag };
+        return await store.ReadProductAsync(id, ct) ?? throw new InventoryException(404, "Product not found.");
     }
 
     private async Task<Product> MutateAsync(string id, string etag, string actor, string reason, string correlationId,

@@ -1,366 +1,233 @@
-# IPL Franchise Store
+# IPL Franchise Merchandise Store
 
-Full-stack take-home assignment with Cosmos DB products, audited inventory, persistent carts and atomic demo checkout.
+An assessment application for browsing IPL merchandise, maintaining customer carts and purchasing stock without overselling. ASP.NET Core/.NET 10 and the Cosmos DB SDK provide atomic multi-product checkout, optimistic inventory concurrency, durable cart/checkout idempotency, historical purchase snapshots and audited stock/price changes. The React/TypeScript frontend uses a typed API client.
 
-- `backend/IPLFranchiseStore.Api`: ASP.NET Core Web API targeting .NET 10.
-- `frontend`: React, TypeScript, and Vite.
-- `tests/IPLFranchiseStore.Api.Tests`: xUnit health endpoint integration test.
+**Local assessment only:** customer and admin APIs require the backend's **Development** environment. Demo identities and role selection are not authentication. Production/Staging expose catalogue and health routes, but do not map cart, checkout, order or admin routes. This is not a production-ready storefront.
+
+## Architecture at a glance
+
+```mermaid
+flowchart LR
+    UI[React / TypeScript] -->|/api via Vite proxy| API[ASP.NET Core endpoints]
+    API --> Services[Catalogue / Cart / Checkout / Inventory services]
+    Services --> DB[(Cosmos DB StoreData)]
+```
+
+Services own validation and business decisions; endpoints translate requests and errors. One DI-managed singleton CosmosClient uses Gateway HTTPS. Product, cart, order, audit, guard and durable result documents share `/storeId = ipl-store`. Checkout commits conditional inventory/cart/guard writes, order, audits and result in one TransactionalBatch. A failing operation rolls back the purchase. See [DESIGN.md](DESIGN.md) for the four ADRs, failure analysis and accepted trade-offs.
+
+| Location | Purpose |
+| --- | --- |
+| [backend/IPLFranchiseStore.Api](backend/IPLFranchiseStore.Api) | API, application services, Cosmos provisioning and contracts |
+| [frontend/src](frontend/src) | React routes, role layouts, typed transport and component tests |
+| [tests/IPLFranchiseStore.Api.Tests](tests/IPLFranchiseStore.Api.Tests) | xUnit API, emulator integration, concurrency and diagnostic tests |
+| [frontend/scripts](frontend/scripts) | Isolated live customer/admin verification |
+| [AI-USAGE.md](AI-USAGE.md) | AI tools, scope of assistance and validation limitations |
 
 ## Prerequisites
 
-.NET SDK 10.0.403 (pinned in `global.json`), Node.js 24.15.0, npm 11.12.1.
-Frontend dependencies are pinned; commit `frontend/package-lock.json` for reproducible installs.
-On Windows PowerShell, use `npm.cmd` if execution policy blocks `npm.ps1`.
+- Windows with Azure Cosmos DB Emulator installed and running at `https://localhost:8081`. Docker and WSL are not required.
+- .NET SDK **10.0.403**, pinned without roll-forward in [global.json](global.json).
+- Node.js **24.15.0**, pinned in [.nvmrc](.nvmrc), and npm **11.12.1**, specified in [package.json](frontend/package.json). The lockfile fixes resolved frontend dependencies.
+- PowerShell and an editor such as VS Code. Commands below use Windows PowerShell; use `npm.cmd` to avoid PowerShell execution-policy interference with `npm.ps1`.
+- Trusted emulator TLS certificate. Use the emulator's installation/certificate procedure if trust is missing; never disable certificate validation. The emulator's key is available in its local Quickstart/Data Explorer, not in this repository.
 
-## Validate
+Dependencies include Cosmos SDK 3.63.3, React 19.3.1, Vite 8.3.5 and TypeScript 7.0.2. EF Core is not used. No clean-machine setup was performed for this documentation revision.
 
-From the repository root:
+## First-time setup (Windows PowerShell)
 
-```sh
+### 1. Obtain the source and start the emulator
+
+Replace the placeholder with the repository URL supplied to you; no published URL is assumed here. If already in the checkout, skip cloning.
+
+```powershell
+git clone '<repository-url>' IPLFranchiseStore
+Set-Location IPLFranchiseStore
+dotnet --version
+node --version
+npm.cmd --version
+Start-Process -FilePath "$env:ProgramFiles\Azure Cosmos DB Emulator\CosmosDB.Emulator.exe" -WindowStyle Hidden
+```
+
+The executable path above is the default Windows installation path and exists in the reviewed environment; use your installation path if different. Wait for emulator readiness, open `https://localhost:8081/_explorer/index.html`, and confirm its certificate is trusted. A certificate error is a setup failure, not a reason to use an insecure HTTP client option.
+
+### 2. Configure local credentials
+
+The API project already declares UserSecretsId `IPLFranchiseStore-local-development`; no `user-secrets init` is needed. This masked prompt sends JSON through stdin rather than putting the key in the command text. Run from the repository root:
+
+```powershell
+$secureKey = Read-Host 'Paste the local emulator key' -AsSecureString
+$plainKey = [System.Net.NetworkCredential]::new('', $secureKey).Password
+@{ 'Cosmos:Key' = $plainKey } | ConvertTo-Json -Compress | dotnet user-secrets set --project backend/IPLFranchiseStore.Api
+Remove-Variable plainKey, secureKey
+```
+
+Do not print the secrets store or paste credentials into tracked files. User Secrets are local development storage, not encrypted production secret management. The supported alternative is `Cosmos__Key` in the API/test process environment, injected securely rather than stored in a script. Optional overrides are `Cosmos__Endpoint`, `Cosmos__DatabaseName` and `Cosmos__ContainerName`; defaults are `https://localhost:8081`, `IPLFranchiseStore` and `StoreData`. Environment values override User Secrets, so remove unintended overrides before using the defaults.
+
+### 3. Restore and start the backend (terminal A)
+
+```powershell
+dotnet restore
+dotnet build
+$env:ASPNETCORE_ENVIRONMENT = 'Development'
+$env:DOTNET_ENVIRONMENT = 'Development'
+dotnet run --project backend/IPLFranchiseStore.Api --no-launch-profile --urls http://localhost:5000
+```
+
+Both environment variables are explicit to avoid inherited environment ambiguity. `--no-launch-profile` avoids the alternative ports in launchSettings.json. Startup creates the database, container, `/storeId` key and required composite indexes, then create-only seeds MI Jersey (₹1,999/50), CSK Cap (₹499/100), RCB Flag (₹299/200) and KKR Signed Photo (₹4,999/2). Existing product values are preserved; a missing seed ID is recreated. Initialization failure logs a sanitized warning but does not stop liveness; correct the cause and restart. Inspect database/container and indexing in Data Explorer.
+
+### 4. Install and start the frontend (terminal B)
+
+From a second terminal at the repository root:
+
+```powershell
+Set-Location frontend
+npm.cmd ci
+npm.cmd run dev
+```
+
+`npm.cmd ci` installs from the committed lockfile; `npm.cmd install` is the available alternative when intentionally resolving dependencies. Vite uses **http://localhost:5173**, requires that port to be free, and proxies `/api` to **http://localhost:5000**. Keep both terminals running.
+
+### 5. Verify readiness (terminal C)
+
+```powershell
+Invoke-RestMethod http://localhost:5000/api/v1/health
+Invoke-RestMethod http://localhost:5000/api/v1/health/dependencies
+Invoke-RestMethod 'http://localhost:5000/api/v1/products?paged=true&includeTotalCount=true'
+```
+
+Liveness returns HTTP 200 with `{"status":"healthy"}` even when Cosmos is unavailable. Dependency health returns 200 with `{"status":"healthy","cosmos":"available"}`, or sanitized 503 when container metadata cannot be read; it does not certify seed/index completeness. Open **http://localhost:5173/products**. These are expected contracts, not newly executed checks in this documentation task.
+
+## Demo walkthrough
+
+**Use disposable data for all mutations.** Stop terminal A with Ctrl+C. In that same repository-root terminal, retain Development and set a unique database before restarting:
+
+```powershell
+$env:Cosmos__DatabaseName = 'IPLFranchiseStoreReviewer-' + [guid]::NewGuid().ToString('N')
+Write-Output "Disposable database: $env:Cosmos__DatabaseName"
+dotnet run --project backend/IPLFranchiseStore.Api --no-launch-profile --urls http://localhost:5000
+```
+
+This starts a new seeded database; it does not reset the normal database. Record the printed name. To return later, stop this process, remove the override with `Remove-Item Env:Cosmos__DatabaseName`, and restart the normal API. The disposable database is retained; delete only the identified disposable resource if desired.
+
+1. Open `/products` as **Shopper**. Choose a new demo user such as `reviewer-alice` in the identity form; a fresh user has an empty cart. Search `cap`, choose merchandise **Cap** and franchise **Chennai Super Kings**: CSK Cap should match. Filters combine with AND; clear them to browse other products.
+2. Add **2 MI Jerseys** and **3 CSK Caps**. Visit `/cart`: ₹3,998 + ₹1,497 = **₹5,495.00** at the fresh seed prices. Continue to `/checkout`, submit once, then inspect the confirmation and `/orders`. Stock becomes 48/97, and the purchased cart is empty. `/orders/:id` retains purchased names/prices even after later product changes.
+3. For an uncertain cart/checkout request, the UI retains the original command and offers **Retry saved request**. Do not create a replacement ID. There is no general success-replay button; the isolated customer script below explicitly repeats the original successful checkout and checks no second deduction.
+4. Before changing a price, add one CSK Cap to a new saved cart without checking out. Choose **Development Demo Admin** in **Development-only demo role** to navigate to `/admin`. The selector is explicitly not real authentication. Admin navigation focuses on inventory, stock, price and audits; Shopper navigation shows Products, Cart and Orders.
+5. Select CSK Cap, set price to **549.00** with an actor and reason; inspect the new ETag and price audit. Apply a small nonzero stock adjustment with a reason and inspect its audit. Switch to Shopper and refresh `/cart`: changed price/stock/version require **Accept reviewed changes**. Refresh alone or editing quantity does not accept new snapshots. The earlier order still shows ₹499 caps.
+6. To demonstrate a stale ETag, open `/admin` in two tabs, select the same product and then commit a change in one. Submitting the older version in the other should produce **412**. Use **Reload latest product and audits**, review retained form values, and explicitly resubmit only if still intended. No automatic overwrite occurs.
+
+Role and demo user selections survive navigation/refresh in the same tab. `/` redirects to `/products` or `/admin`; Shopper direct access to `/admin` is denied. Test keyboard focus, error announcements, narrow screens and refresh/deep links in Chrome. Browser/accessibility review remains pending; jsdom tests and HTTP flows do not establish a browser end-to-end pass.
+
+The PDF's photo stock-two/last-unit example is ambiguous. Automated races use isolated stock-one fixtures; normal seed stock is not rewritten to manufacture that demonstration.
+
+## Automated tests and live verification
+
+**Latest Task 4.1 verification, 30 October 2026:** 214 backend tests and 149 frontend tests passed; isolated live customer/admin flows also passed. The earlier documentation-only revision reported 206/138. Counts can change with subsequent source revisions.
+
+From the repository root, with the trusted emulator running and credentials configured:
+
+```powershell
 dotnet restore
 dotnet build
 dotnet test
-cd frontend
-npm install
-npm run build
-npm test
+Set-Location frontend
+npm.cmd run build
+npm.cmd test
 ```
 
-## Run locally
+Jest's configured command is `jest --runInBand`, without watch mode. The frontend build runs TypeScript checking and Vite production bundling; it disables demo admin UI. `npm.cmd run preview` can serve that bundle at its printed URL, but does not make disabled backend routes available and is not a deployment procedure.
 
-```sh
-dotnet run --project backend/IPLFranchiseStore.Api --urls http://localhost:5000
-```
+| Verification layer | Actual scope and isolation |
+| --- | --- |
+| Backend API/diagnostic tests | xUnit and WebApplicationFactory cover HTTP mapping, environment restrictions and safe errors; some cases use configured failures rather than real storage |
+| Emulator integration | The full `dotnet test` includes real persistence, provisioning, paging, concurrency, rollback and replay. Credentials are required; tests fail rather than silently skip missing emulator setup |
+| Frontend unit/component tests | Jest/React Testing Library in jsdom; typed API mocks, navigation, cart/checkout recovery, admin conflicts, formatting and harness unit tests. They do not connect UI tests to Cosmos |
+| Live scripts | Real typed client against an owned API child and unique emulator database; separate from Jest and the xUnit suite |
+| Manual Chrome review | Rendering, responsive layout, keyboard use and screen-reader behavior; not claimed completed |
 
-`GET http://localhost:5000/api/v1/health` returns HTTP 200 and `{"status":"healthy"}`.
+The xUnit fixtures use unique `IPLFranchiseStoreTests-*` databases, constrain the endpoint to localhost and delete their own databases on teardown. Some fixtures provision 4,000 RU/s for bulk/query and large-batch tests. Host provisioning is serialized; race tests explicitly use concurrent independent clients. Normal demo stock is not a fixture. Do not replace unique test database configuration with the normal database. `dotnet test` is the complete emulator-backed command; not all integration tests have uniform category traits, so a category-only filter is not a substitute.
 
-In a second terminal:
+### Live customer and admin checks
 
-```sh
-cd frontend
-npm run dev
-```
-
-Open the URL printed by Vite to see **IPL Franchise Store**.
-
-## Cosmos DB local setup (Gate 1A)
-
-Run the Windows Cosmos DB Emulator at `https://localhost:8081` and trust its installed development certificate. TLS validation remains enabled; fix certificate trust if HTTPS fails rather than bypassing validation.
-
-The API uses the stable Microsoft.Azure.Cosmos SDK with one DI-managed singleton CosmosClient, Gateway HTTPS transport and System.Text.Json camel-case serialization. EF Core is not used.
-
-Configure `Cosmos:Key` using .NET User Secrets for the API project (UserSecretsId `IPLFranchiseStore-local-development`), or set the `Cosmos__Key` environment variable in the API/test terminal. Obtain the local development key from the emulator's Quickstart page. Never put it in appsettings, a script, or a tracked environment file. User Secrets are local development storage, not encrypted production storage.
-
-Optional overrides are `Cosmos__Endpoint`, `Cosmos__DatabaseName`, and `Cosmos__ContainerName`. Defaults are `https://localhost:8081`, `IPLFranchiseStore`, and `StoreData`. The partition key is `/storeId`, and initial products all use `ipl-store`.
-
-Startup creates the database/container if missing and inserts four products with stable IDs. HTTP 409 conflicts are ignored: existing stock, descriptions, prices and timestamps are never overwritten. Missing individual seed records are inserted again. Other initialization failures produce a sanitized warning; liveness remains available. Fix configuration/availability and restart to retry initialization.
-
-Bare `GET /api/v1/products` retains the legacy product array; Gate 3 below adds opt-in search and pagination. Prices are decimal INR amounts; `type` is the document discriminator `product`. `createdAt` and `updatedAt` are UTC timestamps. `GET /api/v1/health/dependencies` reads container metadata and returns HTTP 200 when available or sanitized HTTP 503 when unavailable. The existing `/api/v1/health` remains a liveness check. Products return sanitized HTTP 503 if storage cannot be read. No credentials or SDK exception details are sent to clients.
-
-One logical partition deliberately co-locates the initial store's products so a transactional batch can atomically update multiple products within that partition. Checkout now uses this in Gate 2B below. This cannot provide atomic checkout across store partitions. A single hot store cannot scale horizontally across logical partitions; its normal limits are 20 GB and 10,000 RU/s, and actual throughput can be lower. Before growth, revisit partitioning and checkout consistency rather than treating one partition as an unlimited database. See [Cosmos partitioning](https://learn.microsoft.com/en-us/azure/cosmos-db/partitioning-overview).
-
-Run `dotnet restore`, `dotnet build`, and `dotnet test` after configuring the key. The emulator-backed test is mandatory (fails with an actionable message if the key is missing), uses a unique `IPLFranchiseStoreTests-*` database, verifies `/storeId`, HTTP retrieval and inventory preservation across two API hosts, and deletes only its own test database. It never resets the application's inventory.
-
-Inspect `https://localhost:8081/_explorer/index.html` to see `IPLFranchiseStore` → `StoreData` and the `/storeId` partition key. The API default run URL above remains `http://localhost:5000`.
-
-## Gate 1B: development inventory administration
-
-Products retain their existing fields and now include Cosmos `_etag` (a quoted, opaque concurrency token). Obtain it from `GET /api/v1/products`. Each mutation requires that exact token in `expectedETag`; success returns the committed product, its new `_etag`, an `ETag` HTTP header, and an `X-Correlation-ID` header. Always JSON-encode the token rather than stripping its embedded quotes.
-
-These routes are mapped **only when ASPNETCORE_ENVIRONMENT is Development**:
-
-| Method | Route | Body |
-| --- | --- | --- |
-| POST | `/api/v1/admin/products/{id}/stock-adjustments` | `quantity` (signed integer delta), `expectedETag`, `actor`, `reason` |
-| POST | `/api/v1/admin/products/{id}/price-updates` | `price` (decimal INR), `expectedETag`, `actor`, `reason` |
-| GET | `/api/v1/admin/products/{id}/audits` | none |
-
-Example PowerShell (run mutations only against disposable development data):
+Keep the normal API at `http://localhost:5000` for **read-only** comparison, with no concurrent demo edits. Build the Debug backend first with `dotnet build` from the root; then, from `frontend`:
 
 ```powershell
-$products = Invoke-RestMethod http://localhost:5000/api/v1/products
-$product = $products | Where-Object id -eq 'mi-jersey'
-$body = @{ quantity = -1; expectedETag = $product._etag; actor = 'local-developer'; reason = 'Manual stock recount' } | ConvertTo-Json
-Invoke-RestMethod -Method Post -Uri "http://localhost:5000/api/v1/admin/products/$($product.id)/stock-adjustments" -ContentType 'application/json' -Body $body
-# Fetch the product again and explicitly review before a subsequent mutation.
-$product = (Invoke-RestMethod http://localhost:5000/api/v1/products) | Where-Object id -eq 'mi-jersey'
-$body = @{ price = 1899.50; expectedETag = $product._etag; actor = 'local-developer'; reason = 'Price correction' } | ConvertTo-Json
-Invoke-RestMethod -Method Post -Uri "http://localhost:5000/api/v1/admin/products/$($product.id)/price-updates" -ContentType 'application/json' -Body $body
-Invoke-RestMethod "http://localhost:5000/api/v1/admin/products/$($product.id)/audits"
+node scripts/verify-customer-flow.mjs
+node scripts/verify-admin-flow.mjs
 ```
 
-The InventoryService owns validation, product reads, business rules and batch persistence. Zero/missing/non-integer adjustments, missing/wildcard ETags, blank actor/reason, and invalid prices return HTTP 400. Reasons are limited to 500 characters and actor to 200. Prices must be positive, at most INR 999,999,999.99, and exactly representable in whole paise; all application money calculations use decimal. Stock is bounded from zero to Int32.MaxValue. Insufficient stock, stock overflow or unchanged price returns HTTP 409. Missing products return 404. A stale ETag returns 412 ProblemDetails; neither pre-read staleness nor a conditional-write conflict is automatically retried with a new ETag. Storage failures return sanitized 503 ProblemDetails.
+Each script uses [verificationIsolation.cjs](frontend/scripts/verificationIsolation.cjs): it starts the trusted built `bin/Debug/net10.0/IPLFranchiseStore.Api.dll` itself, selects an unused loopback port, and supplies highest-precedence CLI configuration for `IPLFranchiseStoreVerification-<uuid>` / `StoreData` at `https://localhost:8081`. The child reads local credentials without printing them. `LIVE_API_URL` is rejected; no pre-existing port-5001 process is used. Readiness and request-origin checks run before verification writes. Do not attach these checks to the normal database.
 
-The service uses one transactional batch containing an ETag-conditional product replacement and one create-only audit document in the same `StoreData` container and `/storeId` partition. The audit includes product ID, actor, UTC timestamp, reason, operation type, decimal old/new values and a server-generated request correlation ID. If either operation fails, neither change commits. Audit IDs are server-generated GUIDs and are independent of correlation IDs. The audit-ID generation method is overridable for tests to force a collision; there is no HTTP failure-injection switch. SDK rate-limit retries retain the original conditional write. Ambiguous transport failures can leave the caller uncertain about commit success: inspect product/audits before resubmitting; correlation IDs are diagnostic, not an idempotency-key contract. No exactly-once network delivery guarantee is claimed.
+The customer flow checks 2 jerseys + 3 caps, ₹5,495, one checkout, stock 48/97, cleared cart, history and replay without a second deduction. The admin flow checks stock changes, price update, 400/409/412 handling, audits, saved-cart acknowledgement and unchanged historical order prices. Both compare the normal catalogue before/after, including ETags; this comparison is supplemental, not their isolation mechanism.
 
-**Security limitation:** Development admin endpoints are unauthenticated and accept a caller-supplied actor. They are for a trusted local machine only; keep the API bound to localhost. They return 404 in Production and Staging. Before production enablement, require authenticated Microsoft Entra ID/OIDC JWTs, an inventory-admin authorization policy, and derive the actor from verified identity claims. Cosmos access should use managed identity and least-privilege data-plane RBAC. Audit documents are append-only through this API, but an account-key holder can modify data directly; this is not a tamper-proof compliance ledger.
+Reports are written to ignored `TestResults/gate4b-live.json` and `TestResults/gate5-live.json`. Scripts stop only their own API child and **retain** their uniquely named databases, unlike xUnit cleanup. Inspect the printed/report database name and manually remove only that identified verification database when finished. They require emulator availability, certificate trust, credentials, a current Debug build and the normal comparison API. Both flows passed during Task 4.1 alongside 214 backend and 149 frontend tests; they were not rerun during final documentation cleanup. These automated results are separate from user-reported manual Chrome checks and do not establish a comprehensive browser/accessibility audit.
 
-The emulator suite uses unique disposable test databases and never adjusts the application's seed inventory. It checks HTTP status mappings, exact audit values, simultaneous stock/price writers, an interleaving between point read and conditional batch, and rollback when audit creation fails. Host setup/teardown is serialized to avoid competing emulator provisioning; the race tests still issue simultaneous requests explicitly.
+## API and behavior
 
-The Gate 2B checkout service reuses these invariants: validate positive requested quantities, calculate remaining stock without underflow, condition each product write on the version read, and commit all product writes plus audit records together in one store partition. A conflict aborts the entire checkout for explicit review/retry. Single-product admin services remain separate; batching multiple independent service calls would not be an atomic checkout. Cosmos transactional batches are limited to 100 operations, 2 MB, and five seconds ([transactional batch documentation](https://learn.microsoft.com/en-us/azure/cosmos-db/transactional-batch)).
+All routes are under `/api/v1`; consult [api.ts](frontend/src/api.ts) and the backend models for complete typed fields.
 
-## Gate 2A: persistent demo carts and durable idempotency
+### Catalogue and paging
 
-Cart routes are available only in Development, under `/api/v1/demo-users/{userId}/cart`. The path's explicit demo identity selects the cart; it is **not authentication**. User IDs are case-sensitive, 1–64 ASCII letters/digits/underscores/hyphens. Anyone able to access the development API can impersonate a demo user. Keep it local. Production and Staging do not map these routes; production must use verified identity claims and ownership authorization instead of a caller-selected user ID.
-
-| Method | Suffix | Purpose |
-| --- | --- | --- |
-| GET | (none) | Read cart, accepted snapshots, current prices/stock and warnings |
-| POST | `/lines` | Add a quantity, incrementing an existing line |
-| PUT | `/lines/{productId}` | Set an existing line's quantity |
-| DELETE | `/lines/{productId}` | Remove a line (JSON body required) |
-| POST | `/acknowledgements` | Accept reviewed current product versions for every line |
-
-Every command requires a new client-generated non-zero UUID `requestId` and `expectedCartVersion` copied from GET cart. An absent cart is returned as `version: "empty"`, `lines: []`, `currentTotal: 0`, `requiresAcknowledgement: false`, `canCheckout: false`; the first successful command creates its document. The cart remains persisted even after removing its final line. Cart version is an application UUID, separate from the internal Cosmos ETag used for conditional writes. Quantities must be 1–10; zero is never a removal shortcut. The demo has a limit of 20 distinct lines so all snapshot guards fit within one Cosmos batch.
-
-Example requests (replace UUIDs and versions with actual values):
-
-```http
-GET /api/v1/demo-users/demo-alice/cart
-
-POST /api/v1/demo-users/demo-alice/cart/lines
-Content-Type: application/json
-
-{"requestId":"5cbce871-1140-4f1a-b052-6e2915b9ae17","expectedCartVersion":"empty","productId":"mi-jersey","quantity":1}
-```
-
-Successful responses return the cart directly, for example:
-
-```json
-{
-  "userId": "demo-alice",
-  "version": "<cart-version-uuid>",
-  "lines": [{
-    "productId": "mi-jersey", "name": "MI Jersey", "quantity": 1,
-    "acceptedPrice": 1999, "acceptedStock": 50, "acceptedProductVersion": "\"<product-etag>\"",
-    "currentPrice": 1999, "currentStock": 50, "currentProductVersion": "\"<product-etag>\"",
-    "priceChanged": false, "stockChanged": false, "versionChanged": false,
-    "insufficientStock": false, "unavailable": false, "requiresAcknowledgement": false,
-    "currentSubtotal": 1999
-  }],
-  "currency": "INR", "currentTotal": 1999,
-  "requiresAcknowledgement": false, "canCheckout": true
-}
-```
-
-Set/remove examples use the latest returned cart version and a fresh request ID:
-
-```http
-PUT /api/v1/demo-users/demo-alice/cart/lines/mi-jersey
-Content-Type: application/json
-
-{"requestId":"c0c471eb-ab7c-4cde-86fc-f64a779ce9b9","expectedCartVersion":"<cart-version-uuid>","quantity":2}
-
-DELETE /api/v1/demo-users/demo-alice/cart/lines/mi-jersey
-Content-Type: application/json
-
-{"requestId":"39202eeb-5d79-4786-871c-f8899328a641","expectedCartVersion":"<cart-version-uuid>"}
-```
-
-On GET, each line is compared with its current product. Any product version, price or stock change requires explicit acknowledgement; stock is flagged even if sufficient units remain. The total uses current prices with decimal INR arithmetic, while accepted prices/stock/version remain visible. Quantity edits preserve existing accepted snapshots and do not implicitly accept changes. Missing products are marked unavailable and total becomes null. Insufficient stock blocks eligibility and cannot be acknowledged until quantity is reduced or the line is removed. `canCheckout` is a point-in-time eligibility indicator only; carts do not reserve inventory. Gate 2B checkout revalidates everything atomically rather than trusting this flag.
-
-To acknowledge, first GET and review the current cart and all product versions, then send the current cart version and the quoted `currentProductVersion` for **every** line:
-
-```http
-POST /api/v1/demo-users/demo-alice/cart/acknowledgements
-Content-Type: application/json
-
-{"requestId":"637c73a9-c0a5-4bef-a898-c3e7acf41ab1","expectedCartVersion":"<cart-version-uuid>","products":[{"productId":"mi-jersey","expectedETag":"\"<current-product-etag>\""}]}
-```
-
-The service refreshes accepted price, stock and product version snapshots only if those reviewed versions and the cart are still current at commit. A concurrent application inventory write causes HTTP 412 and rolls back acknowledgement. HTTP 400 ProblemDetails covers malformed/missing input or invalid quantities; 404 covers missing products/lines; 409 covers stock/line-limit violations or request-ID payload reuse; 412 covers stale cart/product versions or a guard race. After reviewing a 412, submit a new request ID with the refreshed versions. A storage/transport failure returns sanitized 503: retry the **identical** command with the same request ID because its commit outcome may be unknown.
-
-Idempotency is durable Cosmos data, not an in-memory cache. Request IDs are scoped per demo user: a deterministic `cart-request-{user-hash}-{uuid}` ID, user ID, operation, SHA-256 semantic payload fingerprint, result/status and UTC creation time are stored in `StoreData`, in the same `storeId = ipl-store` partition as the cart. Fingerprints include operation, cart version, product ID, quantity and reviewed product versions (sorted by product ID); JSON field order is irrelevant. Matching duplicates replay the stored original status/result **before** current cart validation, even after restart, later cart edits or product changes. This is a historical result, not the latest cart; GET for current state. Different payload/operation with the same user/request ID returns 409. Different users have separate request-ID namespaces. Records have no TTL or automatic pruning in this gate; retention/storage costs must be addressed before growth.
-
-Successful commands create the immutable request result and create/ETag-conditionally replace the cart in one transactional batch. A duplicate result-ID conflict aborts the entire batch. Concurrent duplicate callers resolve to the persisted winning result. Validly identified semantic rejections are also persisted and replayed; their rejection-only batch writes no cart changes. Malformed HTTP bodies, invalid user IDs or invalid/missing UUIDs are rejected before durable processing. No success response is synthesized if the batch/result cannot be confirmed, and no new ETag is silently substituted to reapply a conflicting command.
-
-**Product guard protocol:** An emulator-backed probe demonstrated that batch `ReadItem` ignores `IfMatchEtag`; it is not used as a concurrency guarantee. A separate `productGuard` document per product is lazily created. Snapshot-accepting cart commands and InventoryService read this guard **before** the product, and conditionally replace the guard in the same batch as their own writes. InventoryService now commits product + audit + guard atomically. Cart batches commit cart + request result + guards; product documents, product ETags and inventory are untouched by carts. These short-lived write fences reserve no stock and may cause a conservative 412 during contention even when the product value did not change. All future application product writers must participate in this protocol. Direct account-key edits or other external writers bypassing it are outside the guarantee, just as they bypass application validation/auditing. Do not run an older API instance that writes products without guards alongside this version.
-
-GET cart is read-only and does not provide a locked checkout snapshot; changes may happen immediately after any response. The isolated emulator tests prove single application of concurrent duplicate commands, replay after recreating the API, snapshot warning/acknowledgement state, and rollback of cart/result writes for forced product-guard, cart-ETag and request-record conflicts. They never alter the application's seed inventory.
-
-## Gate 2B: atomic checkout and immutable orders
-
-Development-only endpoints:
-
-| Method | Route | Identity |
-| --- | --- | --- |
-| POST | `/api/v1/orders/checkout` | `X-Demo-User-Id` header matching the cart's demo user |
-| GET | `/api/v1/orders/{orderId}` | Same header; another user's order returns 404 |
-
-The explicit demo identity follows the cart's user naming rules. The header is caller-supplied and is **not authentication**. Both routes are unmapped in Production/Staging until verified identity claims and ownership authorization are implemented. Do not expose the development API beyond a trusted local environment. Payment processing is not implemented.
-
-GET the cart, review/acknowledge any product warnings, and submit its exact `version` with a client-generated non-zero UUID `orderId`. Checkout uses the persisted cart; the client does not send or control order prices, totals or line snapshots.
-
-```http
-POST /api/v1/orders/checkout
-X-Demo-User-Id: demo-alice
-Content-Type: application/json
-
-{"orderId":"c4f8f5ab-fda2-4ac2-b79b-5aec758d7108","expectedCartVersion":"<version-from-GET-cart>"}
-```
-
-Successful checkout and matching retries return HTTP **201 Created** with `Location: /api/v1/orders/{orderId}` and the original persisted order, for example:
-
-```json
-{
-  "id": "order-c4f8f5abfda24ac2b79b5aec758d7108",
-  "storeId": "ipl-store", "orderId": "c4f8f5ab-fda2-4ac2-b79b-5aec758d7108",
-  "userId": "demo-alice", "createdAt": "2026-10-29T14:00:00+00:00",
-  "currency": "INR", "total": 1999,
-  "lines": [{"productId":"mi-jersey","name":"MI Jersey","quantity":1,"unitPrice":1999,"lineTotal":1999,"productVersion":"\"<purchased-product-etag>\""}],
-  "purchasedCartVersion": "<version-from-GET-cart>", "correlationId": "<server-request-correlation>", "type": "order"
-}
-```
-
-```http
-GET /api/v1/orders/c4f8f5ab-fda2-4ac2-b79b-5aec758d7108
-X-Demo-User-Id: demo-alice
-```
-
-GET returns HTTP 200 and the stored historical order; it never joins current product prices into an order. Orders are create-only through this API, and no order update/delete routes exist. A database account-key holder can still edit documents directly; immutable here means application behavior, not a tamper-proof ledger. Gate 3 below adds paged order history.
-
-CheckoutService rejects empty carts, invalid/duplicate lines, missing products, quantities outside 1–10, insufficient stock, and any mismatch between accepted and current price/stock/product ETag. Even a sufficient but changed stock count requires explicit acknowledgement. It collects failing product IDs, codes and reasons in a ProblemDetails `failures` extension. All line failures are discovered before business writes: zero stock is deducted, no order/audit is created and the cart remains intact. A rejection may persist an idempotency result and lazily create guard metadata; neither is a purchase.
-
-| Status | Meaning |
-| --- | --- |
-| 201 | Checkout committed, or original committed result replayed |
-| 400 | Invalid UUID/identity/body, missing expected cart version, or invalid stored line/product data |
-| 404 | Missing product; missing order or wrong user on GET |
-| 409 | Empty cart, insufficient stock, conflicting order ID/user/payload, or a batch create conflict |
-| 412 | Cart changed, product acknowledgement required, or concurrent product/guard/cart change |
-| 413 | More than 20 distinct lines or the supported document-size budget exceeded |
-| 503 | Storage/transport result uncertain; retry the identical order ID, user and original payload |
-
-Example error:
-
-```json
-{"type":"https://tools.ietf.org/html/rfc9110#section-15.5.10","title":"Checkout rejected; no products were purchased.","status":409,"failures":[{"productId":"kkr-signed-photo","code":"insufficientStock","reason":"Insufficient stock for this quantity."}]}
-```
-
-For **N** products, exactly one successful Cosmos TransactionalBatch in `StoreData` / `storeId = ipl-store` performs **3N + 3** operations:
-
-1. ETag-conditionally replace the purchased cart with empty lines, a new version, `lastCompletedOrderId` and UTC `lastCompletedAt`.
-2. Create the order and its durable checkout result (two create-only documents).
-3. For every line: ETag-conditionally replace the product with deducted stock, create one `checkout` stock audit, and ETag-conditionally replace that product's guard.
-
-All operations commit or none do. Audit actor is the demo user, timestamp matches the order/product update timestamp, reason includes the order ID, and correlation ID is generated by the HTTP request. Monetary validation and total arithmetic use decimal INR with whole paise, never binary floating-point calculations. Emptying/versioning the cart prevents a second order ID from purchasing the same cart; adding new lines later is a separate cart version and can be purchased normally.
-
-**Maximum order size is 20 distinct products, each quantity 1–10 (63 batch operations).** Before constructing/executing the batch, the service measures the serialized UTF-8 bytes of every document, including the order duplicated inside the stored result, product replacements, audits, guards and completed cart. Their combined budget is capped at **1 MiB**, deliberately leaving a further MiB below Cosmos's 2 MB wire limit for operation envelopes and metadata. Oversized requests return 413 before any purchase writes; they are never split into multiple transactions. The 20-line success case and both count/byte rejection cases run against the emulator.
-
-Order IDs are globally unique in this store, unlike user-scoped cart request IDs. `checkout-request-{orderId}` stores the user, operation, SHA-256 fingerprint of canonical order ID + user + original expected cart version, UTC timestamp, result and status. Its creation is in the same transaction as stock, order, audit and cart completion. A matching retry checks this durable record **before** checking the current cart and returns the original order/status, even after process/service restart, a later cart, or an admin price update. Reusing the ID with another expected cart version or another user returns 409 without exposing the original order. Validly identified rejections are durable too. After reviewing a rejection, submit a new order ID; after a 503/lost response, retry the identical original request with the same ID. There is no automatic application retry with refreshed product/cart ETags and no automatic price acceptance. Record retention has no TTL in this gate.
-
-**Guard review and proof:** InventoryService reads a guard before its product, then includes its conditional guard replacement alongside the product and audit in one batch. Cart additions/quantity edits/acknowledgements read guards before products and conditionally replace them alongside cart/request writes. Checkout follows the same ordering and includes both conditional product and guard replacements in its purchase batch. Thus an acknowledgement or admin write between checkout validation and commit invalidates checkout, and checkout invalidates an already-validated acknowledgement. An acknowledgement can also invalidate an admin write even though the product ETag itself has not changed. Guard conflicts cause conservative 412 responses, never silent retries. Batch reads with ignored If-Match headers are not used as a correctness mechanism.
-
-Tests use independently created Cosmos clients for final-unit competition, same-ID duplicates and different-ID same-cart races; a test-only barrier forces both independent services past validation before either commits. Additional independent-client interleavings prove admin↔cart-acknowledgement↔checkout guard participation in both directions. Tests append a deliberately conflicting final operation to a real emulator batch and confirm rollback of every product/order/audit/cart write. Another test commits successfully, then injects an IOException before delivering the success response (HTTP 503); a normal retry returns the persisted original order without another deduction. Test hooks are protected service overrides only; no HTTP failure switches are exposed.
-
-The concurrency guarantee assumes all application writers use the protocol and a single supported store partition. Direct account-key writers, old API versions bypassing guards, external payment effects, cross-partition purchases, multi-region production behavior and tamper-proof storage are outside this verified gate. Seed initialization remains create-only and never overwrites inventory. All automated/live verification mutations use dedicated isolated emulator databases.
-
-## Gate 3: catalogue queries, history and compatible API evolution
-
-Bare `GET /api/v1/products` (or `?paged=false` without catalogue parameters) retains its **array** response, full field set and legacy error shape, capped at 50 items in name ASC / id ASC order. It sets Deprecation: true, X-Page-Size: 50 and a Link rel="alternate" to paged mode. When more results exist, Link rel="next" contains the complete opaque continuation URL (the next response is a paged envelope). Even a short/empty SDK page may have a next link: always follow it. This deliberately bounds old callers; callers that ignored headers must migrate to avoid incomplete catalogues. Use `?paged=true` to obtain a page. Supplying any catalogue filter, `pageSize`, `continuationToken` or `includeTotalCount` also selects the paged envelope automatically. Combining `paged=false` with these new parameters returns 400. Existing clients can continue deserializing the bare array; new clients should always use paging.
-
-| Catalogue parameter | Accepted values / default | Example |
-| --- | --- | --- |
-| `paged` | Boolean; absent preserves the bare legacy array unless another supported parameter selects paging. `false` cannot accompany filters/paging options. | `paged=true` |
-| `search` | Optional case-insensitive partial product name, trimmed length 1–128 | `search=jer` |
-| `type` | Optional merchandise type: `Jersey`, `Cap`, `Flag`, `Signed Photograph`, `Other`, case-insensitive. `Signed Photo` is an alias. Deprecated `product` retains the old all-product discriminator filter. | `type=Cap` |
-| `merchandiseType` | Explicit alias for the five merchandise types above; `product` is not a merchandise type. If both parameters appear, their restrictions combine with AND. | `merchandiseType=Signed%20Photograph` |
-| `franchise` | Optional trimmed 1–64 characters; known franchise IDs/full names below are interchangeable and case-insensitive. Other nonempty values use an exact case-insensitive lookup, returning no matches when absent. | `franchise=Chennai%20Super%20Kings` or `franchise=CSK` |
-| `pageSize` | Integer 1–50; default **10** in paged mode | `pageSize=2` |
-| `continuationToken` | Absent for first page; otherwise an opaque nonempty token, URL-encode and return unchanged | `continuationToken=<next-token>` |
-| `includeTotalCount` | Boolean, default false (`totalCount: null`); true executes an additional COUNT query | `includeTotalCount=true` |
-
-All supplied filters combine with **AND**, using parameterized Cosmos SQL against persisted documents in partition `ipl-store`. **The public `type` filter now implements the assessment's merchandise-type requirement.** `merchandiseType` is its unambiguous alternative. The response/document field `type: "product"` remains the legacy Cosmos discriminator and must not be used as a merchandise label. New clients should display `merchandiseType`. `type=product` is retained only for old clients, not as the recommended merchandise example.
-
-| Franchise ID | Full display name accepted by `franchise` |
-| --- | --- |
-| `MI` | `Mumbai Indians` |
-| `CSK` | `Chennai Super Kings` |
-| `RCB` | `Royal Challengers Bengaluru` (also accepts historical `Royal Challengers Bangalore`) |
-| `KKR` | `Kolkata Knight Riders` |
-
-Unknown nonempty merchandise labels return HTTP 200 with an empty page, consistently with a franchise/name lookup having no matches. `Other` is an explicit supported category, not a synonym for an unsupported filter value. Empty/oversized values, duplicate parameter keys, unsupported parameter names (including `category`, `q`, `name`, `franchiseId`, `offset`, `limit`, `sort`) and invalid paging values return 400 ProblemDetails. Unsupported parameters were previously silently ignored; this was corrected to prevent accidentally unfiltered responses. Parameter names are case-insensitive; examples use the canonical spellings. Each parameter is single-valued. `type=Jersey&merchandiseType=Cap` is an empty intersection; `type=product&merchandiseType=Cap` returns caps.
-
-New seed documents persist canonical `merchandiseType` metadata. Existing seed JSON is **not rewritten**: the four stable seed IDs map explicitly to Jersey/Cap/Flag/Signed Photograph when the stored field is missing/null. The fallback is included in the Cosmos SQL predicate, not a post-query in-memory filter. Explicit stored metadata takes precedence over the fallback and over names; arbitrary legacy products without metadata classify as `Other`, with no guessed classification from their names. Add appropriate canonical metadata through a future reviewed migration if those older custom products need more specific categories. Existing stock, prices, timestamps and product ETags are untouched by catalogue reads or initialization conflicts. Stored discriminator names are not renamed, and cart/checkout/audit/idempotency behavior is unchanged.
-
-```http
-GET /api/v1/products?paged=true&pageSize=2&includeTotalCount=true
-GET /api/v1/products?search=jEr&type=Jersey&franchise=mi&pageSize=10&includeTotalCount=true
-GET /api/v1/products?type=Cap&franchise=Chennai%20Super%20Kings&includeTotalCount=true
-GET /api/v1/products?type=cap&franchise=CSK&includeTotalCount=true
-GET /api/v1/products?merchandiseType=Signed%20Photograph&franchise=Kolkata%20Knight%20Riders
-GET /api/v1/products?pageSize=2&includeTotalCount=true&continuationToken=<URL-encoded-next-token>
-```
-
-Paged responses have this shape:
-
-```json
-{"items":[],"nextContinuationToken":null,"pageSize":10,"totalCount":0}
-```
-
-`items` contains the existing complete Product representation: ID, ETag, name, type, franchise, description, decimal INR price/currency, stock and timestamps. The concrete backwards-compatible addition is **`stockStatus`**: `outOfStock` for stock <= 0, `lowStock` for 1–5, and `inStock` above 5. It is computed from current stock, requires no old-document migration or client input, and is additive to both legacy and paged product results. Old fields are neither renamed nor removed. A contract test checks the full old field set and deserializes the array with a legacy client DTO that ignores the new field.
-
-The audited correction also adds `merchandiseType`, `franchiseId`, `franchiseName` and `isLimitedEdition` to both legacy and paged product items. For example, CSK Cap retains `type: "product"` and `franchise: "CSK"` while exposing `merchandiseType: "Cap"`, `franchiseId: "CSK"`, `franchiseName: "Chennai Super Kings"`, `isLimitedEdition: false`. KKR Signed Photo exposes `merchandiseType: "Signed Photograph"` and `isLimitedEdition: true`. Prices remain decimal INR amounts **including tax**, with no added tax calculation; no shipping enhancement is implemented here. Old clients ignore these additional fields, and new clients can distinguish merchandise classification from document identity without changing old stored documents.
-
-Catalogue pages use `ORDER BY c.name ASC, c.id ASC` with Cosmos's case-sensitive ordinal string ordering; search matching remains case-insensitive. Unique IDs break duplicate-name ties. `MaxItemCount` and the SDK continuation token determine each page—there is no `OFFSET LIMIT`, in-memory slicing, or preloading of all matches. Cosmos can return fewer items than requested, including an empty page with a continuation token; keep following `nextContinuationToken` until null.
-
-`totalCount` is null unless `includeTotalCount=true`. When enabled, it is an exact `COUNT(1)` query with the same filters and partition, executed **in addition to** the page query on every request. This consumes extra RUs and latency; count cost depends on data/filter cardinality, and partial `CONTAINS` searches can require more index work. Leave it disabled when not needed. Count and page are separate reads, not a transactionally consistent snapshot during concurrent writes.
-
-Order history uses the established explicit development identity:
-
-```http
-GET /api/v1/orders?pageSize=10&includeTotalCount=true
-X-Demo-User-Id: demo-alice
-
-GET /api/v1/orders?dateFrom=2026-10-01T00%3A00%3A00Z&dateTo=2026-10-31T23%3A59%3A59.9999999Z&pageSize=10
-X-Demo-User-Id: demo-alice
-```
-
-`GET /api/v1/orders` returns the same paged envelope with original OrderDocument snapshots as items. Only the supplied user's persisted orders are queried; counts also include only that user. The endpoint remains Development-only and does not treat the caller-controlled header as production authentication. It uses `createdAt DESC, id DESC`, so newest orders come first and tied timestamps remain deterministic. Product names, unit prices, line totals, order totals, correlation IDs and original timestamps are read from immutable orders, never joined to the current catalogue.
-
-History accepts `dateFrom`, `dateTo`, `pageSize`, `continuationToken` and `includeTotalCount`. Date bounds are **inclusive**. Dates must be full ISO 8601 UTC timestamps with `Z` or `+00:00` and up to seven fractional-second digits; local timestamps, nonzero offsets, invalid calendar dates and reversed ranges return 400 ProblemDetails. URL-encode `+` if using `+00:00`. Query parameters are normalized to the existing persisted DateTimeOffset UTC representation (`+00:00`, with serializer-trimmed fractional seconds), preserving old orders without rewriting them. The query assumes orders were stored by the established UTC serializer; external writers using inconsistent date-string formats are outside this contract. The future React UI will display local time, defaulting to **Asia/Kolkata (IST)**; no frontend change is part of this gate.
-
-Continuation tokens wrap the **actual Cosmos SDK token** with ASP.NET Core Data Protection authenticated encryption. A fingerprint binds each token to endpoint/query version, Cosmos endpoint/database/container/partition, SDK assembly version, filters, sort, page size and count option; history also binds the demo user. Tokens are opaque query state, not authentication. Tampered, oversized, malformed, cross-query, cross-user and mismatched-option tokens return sanitized **400 ProblemDetails**. Keep the filters/options/user unchanged between pages. Trimming text filters and equivalent UTC timestamp spellings are normalized, but clients should otherwise repeat the same values. Invalid sizes/filters/dates also return 400; unavailable storage/indexes return sanitized 503. The legacy bare products endpoint preserves its prior 503 JSON error for old clients.
-
-The catalogue query-version scope was deliberately advanced for the merchandise correction: older catalogue continuation tokens return 400 and require restarting at the first page. This invalidates only query cursors, not product ETags, cart requests, checkout request IDs, orders or order-history tokens. Equivalent known franchise aliases normalize to the same restriction; changing to a different franchise or merchandise category cannot silently continue an earlier query.
-
-Data Protection uses the local Windows user-profile key ring outside the repository with application name `IPLFranchiseStore`. Tokens survive API recreation with that same key ring, as verified by an emulator test. Losing keys, changing SDK/query/container versions or moving between unshared key rings can invalidate tokens: restart from the first page. A future multi-instance deployment must share and protect its key ring. No continuation signing/encryption keys are committed or hard-coded.
-
-Provisioning adds these required composite indexes:
+New clients use `GET /products?paged=true`. Example:
 
 ```text
-(/name ASC, /id ASC)
-(/createdAt DESC, /id DESC)
+http://localhost:5000/api/v1/products?paged=true&search=cap&type=Cap&franchise=Chennai%20Super%20Kings&pageSize=10&includeTotalCount=true
 ```
 
-New containers receive them at creation. Existing containers receive missing composites through an ETag-conditional **metadata-only** indexing-policy update; existing index paths/composites and all document values/ETags are preserved. After an update, provisioning polls index transformation progress within the existing startup timeout. Large-container transformations can outlast that timeout; queries may return 503 until index provisioning is ready. Index creation/rebuilding and larger indexes add RU/storage/write costs. The normal consistent all-path indexing policy remains the baseline; custom policies excluding query fields require separate review.
+| Parameter | Contract |
+| --- | --- |
+| `paged` | `true` gives an envelope; filters/paging options also imply it. `false` with those options is invalid |
+| `search` | Trimmed case-insensitive partial name, 1–128 characters when provided |
+| `type`, `merchandiseType` | Case-insensitive Jersey, Cap, Flag, Signed Photograph (alias Signed Photo), Other. Both parameters AND-combine if supplied. Prefer public merchandise values; legacy `type=product` is a deprecated discriminator compatibility value |
+| `franchise` | Case-insensitive full name or MI/CSK/RCB/KKR. RCB accepts Royal Challengers Bengaluru and Royal Challengers Bangalore. Other values match persisted franchise text exactly, ignoring case |
+| `pageSize` | Integer 1–50, default 10 |
+| `continuationToken` | Opaque token from the previous page; preserve filters, size and count options. Invalid/mismatched tokens return 400 |
+| `includeTotalCount` | Boolean, default false; optional COUNT adds RU cost and is separate from the item query |
 
-Fixed-dataset tests enumerate 124 persisted products and both users' order histories across pages without duplicates/omissions, cover all eight filter-presence combinations, duplicate-name/timestamp ordering, counts, UTC subsecond boundaries, token misuse and historical snapshots. They also prove additive/idempotent index upgrades preserve an existing product's price, inventory and ETag. Shared isolated emulator test fixtures provision 4,000 RU/s to keep indexed bulk setup and large checkout verification from becoming default-400-RU throttling tests; application/production-demo throughput and retry semantics are unchanged.
+Unknown merchandise types yield no matches; unknown franchises can match literal stored values. Empty/overlong filters, unknown or repeated catalogue parameter names and invalid paging values return 400. Type/franchise filters are limited to 64 characters. No `category`, offset or page-number parameter exists.
 
-Continuation paging is not a frozen cross-request snapshot. Concurrent inserts/deletes or product-name changes can affect subsequent pages; the no-duplicates/no-omissions verification applies to a fixed dataset. Single-store partition scalability limits, development authentication limitations, and previous checkout/cart/audit invariants remain unchanged.
+The envelope contains `items`, `nextContinuationToken`, `pageSize`, `totalCount` (null unless requested). Follow the token until null, even after a short/empty page. Ordering is `name ASC, id ASC`; paging is not a frozen snapshot during concurrent edits. Results include existing product fields plus `merchandiseType`, `franchiseId`, `franchiseName`, `isLimitedEdition`, `_etag`, and additive `stockStatus` (`outOfStock` at zero, `lowStock` at 1–5, otherwise `inStock`). Persisted `type` remains `product`; it is not the merchandise category. INR prices include tax by assumption; shipping is absent.
 
-### Product details and bounded compatibility
+`GET /products/{id}` returns one persisted enriched product or 404 ProblemDetails. Bare `GET /products` (or `paged=false` alone) preserves the old array shape but caps an SDK page at 50. `Deprecation`, `X-Page-Size` and a `Link` when more data exists signal bounded compatibility; follow that link into paged mode. Legacy storage failures preserve 503 `{"error":"Product store unavailable."}`; modern catalogue errors use ProblemDetails. Old clients ignoring links cannot assume complete enumeration.
 
-GET /api/v1/products/{id} point-reads the persisted product in the store partition and returns the same complete, enriched Product representation as catalogue items. Unknown IDs or non-product documents return 404 ProblemDetails; dependency failures return sanitized 503 ProblemDetails. No document is rewritten. Example: GET /api/v1/products/csk-cap.
+This legacy 503 envelope is an explicit compatibility limitation against uniform ProblemDetails. Proposed migration (not implemented): introduce `/api/v2/products` or an explicitly negotiated error-format opt-in, document adoption/deprecation dates, and retain the v1 legacy envelope until consumers migrate. New clients already use `paged=true` and ProblemDetails; no current response shape changes silently.
 
-The legacy list cap is a deliberate compatibility correction required by the assessment, not a promise that legacy callers will still receive the entire catalogue. Use paged=true for all new clients. Follow nextContinuationToken until null, including after empty pages.
+### Customer and inventory operations (Development only)
 
-## React customer journey (Gates 4A / 4B)
+| Group | Routes and request essentials |
+| --- | --- |
+| Cart | Base `/demo-users/{userId}/cart`: GET; POST `/lines` to add; PUT `/lines/{productId}` to set; DELETE `/lines/{productId}` with a JSON body; POST `/acknowledgements` |
+| Checkout | POST `/orders/checkout`: `orderId`, `expectedCartVersion`; identity in `X-Demo-User-Id` |
+| Orders | GET `/orders/{orderId}` and GET `/orders`, both with `X-Demo-User-Id`; another user's order returns 404 |
+| Stock | POST `/admin/products/{id}/stock-adjustments`: signed integer `quantity`, `expectedETag`, `actor`, `reason` |
+| Price | POST `/admin/products/{id}/price-updates`: decimal `price`, `expectedETag`, `actor`, `reason` |
+| Audits | GET `/admin/products/{id}/audits`: selected product's full, currently unpaginated audit array |
 
-Run the Development API at http://localhost:5000 and Vite from `frontend` with `npm.cmd run dev`. Vite serves http://localhost:5173 and proxies `/api` to the backend. `npm.cmd run build` type-checks and builds; `npm.cmd test` runs all Jest/React Testing Library tests once, without watch mode.
+Demo user IDs are case-sensitive, 1–64 ASCII letters/digits/underscores/hyphens. The React client sends the same user header on cart/order requests; cart ownership is selected by the path, orders by the header. Both are spoofable.
 
-Routes: `/products`, `/products/:id`, `/cart`, `/checkout`, `/orders`, `/orders/:id`. Admin remains an explicitly pending page. All catalogue reads request `paged=true`; continuation stacks implement Next/Previous, and filters reset the stack. The UI displays public merchandise metadata rather than the Cosmos discriminator. Cart and order prices/totals come from the server; the browser only formats them with `Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR' })`.
+Every cart command needs a nonzero UUID `requestId` and current `expectedCartVersion` (`empty` for an absent cart). Add supplies `productId` and `quantity`; set supplies quantity. Acknowledgement supplies `products: [{productId, expectedETag}]` for every reviewed line. Quantity is 1–10 and no greater than current stock; zero does not remove a line. Cart responses expose accepted/current snapshots, warnings, `currentTotal`, `requiresAcknowledgement` and `canCheckout`. No stock is reserved. Missing products make totals unavailable. Quantity edits do not implicitly accept a changed snapshot.
 
-The selected demo user defaults to `demo-alice` and is retained in this tab's session storage. The visible identity form accepts the existing 1–64-character ASCII user IDs. Every cart/order request sends `X-Demo-User-Id`; cart requests also use the matching user in the existing route path. This is caller-selected development identity, **not authentication**. No production security or payment integration is implied.
+Checkout uses the persisted cart, not client prices. Success and matching replay return **201** and the original order (`orderId`, `createdAt`, `lines`, `total`, etc.). A single batch clears the purchased cart, deducts all stock and creates order/audits/result. Maximum 20 distinct lines, at most 63 batch operations and a conservative 1 MiB document budget; oversize is 413. Failed lines are reported in ProblemDetails `failures`; the purchase leaves inventory/cart unchanged.
 
-Each new cart action generates a UUID requestId; each new checkout generates a UUID orderId. The complete original command (including expectedCartVersion and acknowledgement product ETags) is saved in **sessionStorage before sending**, with the user and operation. A synchronous lock prevents repeated clicks during preparation/sending. Network failure, timeout, unreadable response, HTTP 408/429 or 5xx retains the command and blocks all new mutations and identity switching. “Retry saved request” sends exactly that command; it never refreshes a version or generates a replacement ID. The saved command survives route changes and reloading/recreating the app in the same tab. Definitive other 4xx rejections finish that intent; refresh/review the cart and explicitly make a new action. Writes are never automatically retried. A 15-second request timeout is treated as ambiguous. A successful replay is followed by a current-cart GET because an idempotent response can be historical.
+History accepts `dateFrom`, `dateTo`, `pageSize`, `continuationToken`, `includeTotalCount`. Dates are inclusive UTC ISO 8601 with seconds and `Z` or `+00:00` (up to seven fractional digits; URL-encode `+`). Same page-size/count defaults and envelope as catalogue; order is `createdAt DESC, id DESC`, scoped to the demo user. Example: `/api/v1/orders?pageSize=10&dateFrom=2026-10-01T00:00:00Z`. Stored timestamps are UTC; customer order display defaults to Asia/Kolkata (IST). Use the labelled Display time zone selector in order history for browser-local time or UTC; the valid preference survives navigation/refresh in the same tab and applies to order details. Invalid/missing preferences fall back to IST. Admin audit times remain IST. UTC history filters and stored timestamps never change.
 
-Session storage is a deliberate per-tab recovery boundary, not a durable cross-device queue. Closing the tab, clearing browser data or manually changing saved commands loses recovery information. Keep the tab until uncertain requests resolve. If storage is unavailable/corrupt, mutations are blocked. Separate tabs are independent clients: backend durable idempotency, cart versions and atomic checkout remain authoritative for concurrent activity. No in-memory flag is relied upon for server correctness.
+### Errors and retries
 
-Cart displays accepted/current price and stock differences and product-version warnings. Only the explicit “Accept reviewed changes” action submits the exact displayed versions; quantity edits and refresh never accept changed snapshots. Insufficient/unavailable stock blocks acknowledgement/checkout. Checkout revalidates on the server even when the cart currently says canCheckout. Confirmation and order history use immutable purchased line snapshots. History filters are **inclusive UTC** date/time inputs sent with Z; displayed order times use **Asia/Kolkata (IST)**. Paging and date validation use the existing API contract.
+- **400:** malformed input, invalid quantity/price/filter/date/token. **404:** missing product/line/order or routes disabled outside Development.
+- **409:** business conflict, insufficient stock, unchanged admin price or reuse of an ID with different intent. **412:** stale product/cart/guard version; review current state before a new logical action. **413:** oversized checkout. **503:** sanitized dependency/unconfirmed outcome. Cart/order optional reads verify container availability before treating SDK 404 as a missing item; missing infrastructure returns sanitized 503.
+- Cart IDs are per user; order IDs bind across the store. Same ID and original semantic payload replay the persisted original result, even after restart or later cart changes. New logical actions need new IDs. Semantic rejections can also be durable; retrying their IDs does not reevaluate them.
+- On network failure, timeout, unreadable response, 408/429 or 5xx, customer UI retains the entire command in sessionStorage, blocks new mutations/user changes and retries only explicitly with the original ID/payload. No fresh ETag is silently substituted. Closing the tab/clearing storage loses that recovery handle; inspect history before another purchase.
+- Admin writes have **no durable idempotency key**. Success returns the committed product/new ETag. On 412, explicitly reload/review. On an uncertain transport failure, inspect product/audits; never blindly retry the delta. Preserve quoted ETags as JSON strings.
+- SDK 429 retries are configured to two; exhausted failures generally become 503. No application rate limiter or public 429/Retry-After policy is implemented.
 
-### Isolated live customer verification
+## Security and environment limitations
 
-In a separate terminal, set `Cosmos__DatabaseName` to a **new disposable** `IPLFranchiseStoreTests-Gate4B-<uuid>` and start the API on http://localhost:5001 with `dotnet run --no-build --project backend/IPLFranchiseStore.Api --urls http://localhost:5001`. Keep the normal API running on 5000. From `frontend`, run `node scripts/verify-customer-flow.mjs`. It uses the real TypeScript API client (transpiled using the existing Babel dependency), sends real HTTP requests and requires untouched stock in this isolated database. It refuses mutation URLs other than localhost:5001. Port alone does not prove isolation: the terminal's database override is a required prerequisite. Never point this test API at the normal database.
+Keep Development bound to trusted localhost. Neither the caller-selected user/header, audit actor nor demo role is validated identity. Production builds hide demo role switching/admin editing; frontend guards are not authorization. Backend Production/Staging independently unmap **all customer cart/order routes and all admin routes**, including reads. Public catalogue/health remain available.
 
-The check creates a unique temporary demo user, adds 2 MI Jerseys and 3 CSK Caps, verifies ₹5,495, checks out, verifies stock 48/97, an empty cart, one historical order and exact replay without further deductions. It also compares the normal catalogue including product ETags before/after. Results go to ignored `TestResults/gate4b-live.json`. It does not reset inventory or delete any database. Retain or delete only the explicitly named disposable database through the emulator after inspection. Browser rendering, narrow-screen layout, keyboard focus and screen-reader experience still require manual browser checks; HTTP/client integration and jsdom component tests are not claims of a rendered-browser end-to-end pass.
+Production enablement requires OIDC/JWT validation, server-side role policies, verified actor/subject, ownership and franchise membership checks. None is implemented. Use managed identity/least privilege and production secret management; do not deploy emulator credentials or Development configuration. Direct account-key writes bypass application audits/guard invariants. Never commit/log credentials, authorization headers or request bodies. Gitignore excludes build/dependency folders, TestResults, coverage, logs and local `.env` files; that does not replace reviewing staged content.
+
+## Design, assumptions and submission status
+
+[DESIGN.md](DESIGN.md) contains architecture, partitioning, concurrency/recovery and future tenant-isolation ADRs, additional business scenarios, assumptions, limitations and ranked next steps. One shared logical partition buys atomic mixed-franchise purchases at a hot-key/storage ceiling; account consistency and cross-instance visibility remain unverified. Reservations, payments/refunds, shipping, real identity and tenant migration are deferred. Docker, CI and rate limiting are optional and absent. Browser accessibility checks remain pending.
+
+The source, provisioning code, test suites and mandatory reviewer documents (**README.md**, **DESIGN.md**, **AI-USAGE.md**) are present in the working tree. Uncommitted work still needs review; this is not a publication or submission-completion claim. [CATALOGUE_AUDIT.md](CATALOGUE_AUDIT.md) is a historical investigation with closure notes, not the current run guide.

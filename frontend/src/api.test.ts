@@ -1,4 +1,4 @@
-import { ApiError, catalogueApi, customerApi } from './api';
+import { adminApi, ApiError, catalogueApi, customerApi } from './api';
 const mockFetch = jest.fn();
 beforeEach(() => { globalThis.fetch = mockFetch; mockFetch.mockReset(); });
 test('list always uses envelope and safely encodes combined filters and opaque token', async () => {
@@ -39,4 +39,15 @@ test('network timeout is bounded and remains ambiguous', async () => {
   jest.useFakeTimers(); mockFetch.mockImplementation((_url, options) => new Promise((_resolve, reject) => options.signal.addEventListener('abort', () => reject(new Error('timeout')))));
   const result = expect(customerApi.checkout('demo-alice', { orderId: 'id', expectedCartVersion: 'v' })).rejects.toMatchObject({ status: 0 });
   await jest.advanceTimersByTimeAsync(15000); await result; jest.useRealTimers();
+});
+test('admin stock contract preserves signed quantity, actor, reason and exact quoted ETag', async () => {
+  const command = { quantity: -3, expectedETag: '"etag"', actor: 'local-admin', reason: 'Recount' }; mockFetch.mockResolvedValue({ ok: true, json: async () => ({ stock: 97, _etag: '"next"' }) });
+  await expect(adminApi.stock('cap', command)).resolves.toMatchObject({ stock: 97, _etag: '"next"' }); expect(mockFetch).toHaveBeenCalledWith('/api/v1/admin/products/cap/stock-adjustments', expect.objectContaining({ method: 'POST', body: JSON.stringify(command) }));
+});
+test('admin price sends decimal value unchanged without rounding', async () => {
+  const command = { price: 549.25, expectedETag: '"etag"', actor: 'local-admin', reason: 'Season price' }; mockFetch.mockResolvedValue({ ok: true, json: async () => ({ price: 549.25 }) }); await adminApi.price('cap', command); expect(mockFetch).toHaveBeenCalledWith('/api/v1/admin/products/cap/price-updates', expect.objectContaining({ method: 'POST', body: JSON.stringify(command) }));
+});
+test('audit contract returns the backend array and propagates 412 without retry', async () => {
+  mockFetch.mockResolvedValueOnce({ ok: true, json: async () => [] }); await expect(adminApi.audits('cap')).resolves.toEqual([]); expect(mockFetch.mock.calls[0][0]).toBe('/api/v1/admin/products/cap/audits');
+  mockFetch.mockResolvedValueOnce({ ok: false, status: 412, json: async () => ({ title: 'Product changed' }) }); await expect(adminApi.stock('cap', { quantity: 1, expectedETag: '"old"', actor: 'admin', reason: 'Recount' })).rejects.toMatchObject({ status: 412 }); expect(mockFetch).toHaveBeenCalledTimes(2);
 });

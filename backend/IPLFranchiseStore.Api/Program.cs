@@ -28,14 +28,15 @@ if (!string.IsNullOrWhiteSpace(settings.Key))
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         await app.Services.GetRequiredService<CosmosStore>().InitializeAsync(timeout.Token);
     }
-    catch (Exception)
+    catch (Exception ex)
     {
-        app.Logger.LogWarning("Cosmos initialization failed. Check emulator availability, certificate trust and local configuration.");
+        app.Logger.LogWarning("Cosmos operation {Operation} failed. ExceptionType {ExceptionType}. Check emulator availability, certificate trust and local configuration.",
+            "initialize", ex.GetType().FullName);
     }
 }
 
 app.MapGet("/api/v1/health", () => Results.Ok(new { status = "healthy" }));
-app.MapGet("/api/v1/health/dependencies", async (IServiceProvider services, CancellationToken cancellationToken) =>
+app.MapGet("/api/v1/health/dependencies", async (IServiceProvider services, HttpContext context, CancellationToken cancellationToken) =>
 {
     try
     {
@@ -44,8 +45,10 @@ app.MapGet("/api/v1/health/dependencies", async (IServiceProvider services, Canc
         await services.GetRequiredService<CosmosStore>().Container.ReadContainerAsync(cancellationToken: timeout.Token);
         return Results.Ok(new { status = "healthy", cosmos = "available" });
     }
-    catch (Exception)
+    catch (Exception ex)
     {
+        app.Logger.LogWarning("Cosmos operation {Operation} failed. RequestId {RequestId}; TraceId {TraceId}; ExceptionType {ExceptionType}",
+            "health.dependencies", context.TraceIdentifier, System.Diagnostics.Activity.Current?.Id ?? context.TraceIdentifier, ex.GetType().FullName);
         return Results.Json(new { status = "unhealthy", cosmos = "unavailable" }, statusCode: 503);
     }
 });

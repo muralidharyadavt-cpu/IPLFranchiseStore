@@ -23,7 +23,12 @@ public class CartService(CosmosStore store)
     private async Task<T?> ReadOptional<T>(string id, CancellationToken ct)
     {
         try { return (await store.Container.ReadItemAsync<T>(id, Partition, cancellationToken: ct)).Resource; }
-        catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.NotFound) { return default; }
+        catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+        {
+            // SDK 404 may describe missing infrastructure, not just an optional item.
+            await store.Container.ReadContainerAsync(cancellationToken: ct);
+            return default;
+        }
     }
 
     private async Task<CustomerCart> ReadCart(string userId, CancellationToken ct) =>

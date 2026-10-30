@@ -78,9 +78,9 @@ test('details loading, network failure and retry work', async () => {
   expect(screen.getByRole('status')).toHaveTextContent('Loading product'); await screen.findByRole('alert');
   fireEvent.click(screen.getByRole('button', { name: 'Retry' })); expect(await screen.findByText('Official Chennai cap')).toBeInTheDocument();
 });
-test('labels, semantic navigation and pending routes are available', async () => {
+test('labels and shopper navigation are available without admin', async () => {
   open(); expect(screen.getByRole('search')).toBeInTheDocument(); expect(screen.getByLabelText('Product name')).toBeInTheDocument(); expect(screen.getByLabelText('Merchandise type')).toBeInTheDocument(); expect(screen.getByLabelText('Franchise', { exact: true })).toBeInTheDocument();
-  await screen.findByText('₹499.00'); fireEvent.click(screen.getByRole('link', { name: 'Admin' })); expect(screen.getByText(/pending implementation/)).toBeInTheDocument();
+  await screen.findByText('₹499.00'); expect(screen.queryByRole('link', { name: 'Admin' })).not.toBeInTheDocument(); expect(screen.getByRole('navigation', { name: 'Shopper navigation' })).toBeInTheDocument();
 });
 test('unknown routes show not found', () => { open('/unknown'); expect(screen.getByRole('heading', { name: 'Page not found' })).toBeInTheDocument(); });
 test('aborted stale requests cannot replace a newer filter result', async () => {

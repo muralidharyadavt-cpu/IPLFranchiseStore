@@ -5,14 +5,8 @@ public sealed class CatalogueService(CosmosPaging paging)
     public async Task<Product> GetAsync(string id, CosmosStore store, CancellationToken ct)
     {
         if (id.Length > 256 || id.IndexOfAny(['/', '\\', '?', '#']) >= 0) throw new QueryException(404, "Product not found.");
-        try
-        {
-            var item = await store.Container.ReadItemAsync<Product>(id, new Microsoft.Azure.Cosmos.PartitionKey(CosmosStore.StoreId), cancellationToken: ct);
-            if (item.Resource.Type != "product") throw new QueryException(404, "Product not found.");
-            return ProductTaxonomy.Enrich(item.Resource);
-        }
-        catch (Microsoft.Azure.Cosmos.CosmosException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
-        { throw new QueryException(404, "Product not found."); }
+        var product = await store.ReadProductAsync(id, ct) ?? throw new QueryException(404, "Product not found.");
+        return ProductTaxonomy.Enrich(product);
     }
 
     public async Task<PageResult<Product>> SearchAsync(string? search, string? type, string? franchise,
