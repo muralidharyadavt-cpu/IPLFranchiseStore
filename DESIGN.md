@@ -1,6 +1,6 @@
 # Engineering design and decision records
 
-Reviewed 30 October 2026 against the supplied assessment and **current working tree**, including uncommitted hardening. Current means implemented; proposed means future work. Alternatives are retrospective unless described as experiments.
+Reviewed 30 October 2026 against the supplied assessment and **committed implementation published on GitHub**. Current means implemented; proposed means future work. Unverified assumptions remain explicitly identified. Alternatives are retrospective unless described as experiments.
 
 Task 4.1 verification: **214 backend / 149 frontend tests passed**, plus owned-process customer/admin emulator flows. The earlier document-only review reported 206/138; focused storage/timezone corrections and their regression evidence are now reflected here. No production benchmarks, cloud SLAs, multi-region validation or independent browser/accessibility verification are claimed.
 
@@ -285,7 +285,7 @@ This checklist maps the supplied PDF. Task 4.1 regression results are recorded a
 | p2 security; p4 security judgement | ADR4, readiness | AdminSecurityTests, demoRole/route guards | Production authentication not implemented |
 | p2 observability; p4 operability | Readiness/scaling | EndpointDiagnosticsTests, Program/endpoint logs | Business metrics/exporter/alerts absent |
 | p2 tenant evolution incl. migration/first step | ADR4 | Explicit proposal bounded by existing partition tests | No implemented tenancy/migration evidence |
-| p3 submission/design/assumptions; p4 trade-offs/critical thinking | Four ADRs, additional scenarios/limitations | Source references and existing verification reports | AI-USAGE separate; final submission commits pending |
+| p3 submission/design/assumptions; p4 trade-offs/critical thinking | Four ADRs, additional scenarios/limitations | Source references and existing verification reports | Implementation and required documentation committed and pushed; recruiter submission not verified |
 | p4 scale 10x and live-change/code-review readiness | Scaling and ADR1 extension path | Independent-client tests and concrete code locations | Interview ability cannot be established from files |
 | Optional delivery, CI/containerization/rate limiting | Scope table | Absent by deliberate scope | Proposed, not claimed complete |
 
