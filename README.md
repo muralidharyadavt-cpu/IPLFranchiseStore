@@ -37,18 +37,26 @@ Dependencies include Cosmos SDK 3.63.3, React 19.3.1, Vite 8.3.5 and TypeScript 
 
 ### 1. Obtain the source and start the emulator
 
-Replace the placeholder with the repository URL supplied to you; no published URL is assumed here. If already in the checkout, skip cloning.
+Clone the repository and verify the required tools:
 
 ```powershell
-git clone '<repository-url>' IPLFranchiseStore
+git clone https://github.com/muralidharyadavt-cpu/IPLFranchiseStore.git
 Set-Location IPLFranchiseStore
+
 dotnet --version
 node --version
 npm.cmd --version
+```
+
+Start the Azure Cosmos DB Emulator:
+
+```powershell
 Start-Process -FilePath "$env:ProgramFiles\Azure Cosmos DB Emulator\CosmosDB.Emulator.exe" -WindowStyle Hidden
 ```
 
-The executable path above is the default Windows installation path and exists in the reviewed environment; use your installation path if different. Wait for emulator readiness, open `https://localhost:8081/_explorer/index.html`, and confirm its certificate is trusted. A certificate error is a setup failure, not a reason to use an insecure HTTP client option.
+Open https://localhost:8081/_explorer/index.html and confirm the emulator is running and its HTTPS certificate is trusted.
+
+If the emulator is installed elsewhere, adjust the executable path. Do not bypass certificate validation.
 
 ### 2. Configure local credentials
 
